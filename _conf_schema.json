@@ -17,6 +17,43 @@
     "hint": "单位：秒，API请求的最大等待时间",
     "default": 10.0
   },
+  "show_unsupported": {
+    "description": "显示未适配平台",
+    "type": "bool",
+    "hint": "在/余额 所有中是否显示未适配的平台列表",
+    "default": true
+  },
+  "output_template": {
+    "description": "余额显示模板",
+    "type": "text",
+    
+    "hint": "自定义每条余额的显示格式。{{?变量}} 表示值为空或0时隐藏该行。可用变量：{{api_key}} {{source_name}} {{currency}} {{balance}} {{total_balance}} {{remaining_balance}} {{used_balance}} {{raw_info}} {{smart_balance}}（智能附加信息）。",
+    "default": "🟢 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  💵 总额: {{balance}} {{currency}}\n  📊 已用: {{?used_balance}} {{currency}}\n  📝 {{?raw_info}}"
+  },
+  "header_template": {
+    "description": "标题模板",
+    "type": "string",
+    "hint": "查询结果的标题格式。可用变量：{{title}}（标题文字）。",
+    "default": "💰 **{{title}}**"
+  },
+  "separator_template": {
+    "description": "标题分隔符",
+    "type": "string",
+    "hint": "标题与内容之间的分隔符。",
+    "default": "════════════════════════════════════════"
+  },
+  "item_separator_template": {
+    "description": "项间分隔符",
+    "type": "string",
+    "hint": "同区块内多条结果之间的分隔符。",
+    "default": ""
+  },
+  "section_separator_template": {
+    "description": "区块分隔符",
+    "type": "string",
+    "hint": "成功/失败/未适配等区块之间的分隔符。",
+    "default": "════════════════════════════════════════"
+  },
   "platform_aliases": {
     "description": "平台别名配置",
     "type": "object",

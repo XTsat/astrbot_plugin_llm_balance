@@ -26,27 +26,44 @@ class BalanceResult:
     error: str = None
 
     def _get_default_string(self) -> str:
-        """生成默认格式的字符串"""
+        """生成默认完整格式（含 source_name 标题，2空格缩进）"""
+        indent = "  "
         msg = f"🟢 **{self.source_name}**\n"
         if self.remaining_balance == self.total_balance:
-            msg += f"  💵 {self.total_balance} {self.currency}"
+            msg += f"{indent}💵 {self.total_balance} {self.currency}"
         else:
-            msg += f"  💵 余额: {self.remaining_balance} {self.currency}\n"
-            msg += f"  📈 总额: {self.total_balance} {self.currency}"
+            msg += f"{indent}💵 余额: {self.remaining_balance} {self.currency}\n"
+            msg += f"{indent}📈 总额: {self.total_balance} {self.currency}"
             if self.used_balance != "0":
-                msg += f"\n  📊 已用: {self.used_balance} {self.currency}"
+                msg += f"\n{indent}📊 已用: {self.used_balance} {self.currency}"
         if self.raw_info:
-            msg += f"\n  📝 {self.raw_info}"
+            msg += f"\n{indent}📝 {self.raw_info}"
         return msg
 
-    def to_string(self, template: str = "") -> str:
+    def _get_default_body(self) -> str:
+        """生成智能附加信息（总额/已用/备注），自动跳过无意义行。{{smart_balance}} 引用"""
+        indent = "  "
+        parts = []
+        if self.remaining_balance != self.total_balance:
+            parts.append(f"{indent}📈 总额: {self.total_balance} {self.currency}")
+            if self.used_balance != "0":
+                parts.append(f"{indent}📊 已用: {self.used_balance} {self.currency}")
+        if self.raw_info:
+            parts.append(f"{indent}📝 {self.raw_info}")
+        return "\n".join(parts) if parts else ""
+
+    def to_string(self, template: str = "", api_key: str = "") -> str:
         if self.error:
             return f"🔴 **{self.source_name}**\n  ❌ {self.error}"
         if not template:
             return self._get_default_string()
 
+        # {{smart_balance}} 引用智能附加信息
+        template = template.replace("{{smart_balance}}", self._get_default_body())
+
         smart_balance = self.remaining_balance if self.remaining_balance != self.total_balance else self.total_balance
         replacements = {
+            "{{api_key}}": api_key,
             "{{source_name}}": self.source_name,
             "{{currency}}": self.currency,
             "{{balance}}": smart_balance,
@@ -55,9 +72,20 @@ class BalanceResult:
             "{{used_balance}}": self.used_balance,
             "{{raw_info}}": self.raw_info,
         }
+        # 处理 {{?变量}} 条件行：值为空或"0"时移除整行
+        import re
+        for key, value in replacements.items():
+            cond_key = key.replace("{{", "{{?")
+            if cond_key in template:
+                if not str(value).strip() or str(value).strip() == "0":
+                    for line in template.split("\n"):
+                        if cond_key in line:
+                            template = template.replace(line + "\n", "").replace("\n" + line, "").replace(line, "")
+        # 常规替换
         result = template
         for key, value in replacements.items():
             result = result.replace(key, str(value))
+            result = result.replace(key.replace("{{", "{{?"), str(value))
         return result.replace("\\n", "\n")
 
 
@@ -539,14 +567,47 @@ class BalancePlugin(Star):
             return "****"
         return key[:6] + "*" * (len(key) - 9) + key[-3:]
 
+    def _item_sep(self) -> str:
+        """获取项间分隔符（默认空行）"""
+        sep = self._get_template("item_separator_template")
+        return sep if sep else "\n\n"
+
+    def _sep(self) -> str:
+        """获取标题分隔线"""
+        return "\n" + self._get_template("separator_template") + "\n"
+
+    def _section_sep(self) -> str:
+        """获取区块分隔线"""
+        return "\n" + self._get_template("section_separator_template") + "\n"
+
+    def _header(self, title: str) -> str:
+        """根据模板生成标题"""
+        template = self._get_template("header_template")
+        return template.replace("{{title}}", title)
+
+    def _format_result(self, res: "BalanceResult", masked_key: str = "") -> str:
+        """根据模板格式化余额结果"""
+        template = self._get_template("output_template")
+        return res.to_string(template, api_key=masked_key)
+
+    def _get_template(self, key: str) -> str:
+        """获取并处理模板（处理 \\n 转义）"""
+        DEFAULT_TEMPLATES = {
+            "output_template": "",
+            "header_template": "💰 **{{title}}**",
+            "separator_template": "━━━━━━━━━━━━━━",
+            "item_separator_template": "",
+            "section_separator_template": "════════════════════",
+        }
+        default = DEFAULT_TEMPLATES.get(key, "")
+        tpl = self.config.get(key, "")
+        if not tpl:
+            tpl = default
+        return tpl
+
     def _insert_key_label(self, text: str, masked_key: str) -> str:
-        """把密钥标签插入到首行（平台名）下方"""
-        if not masked_key:
-            return text
-        lines = text.split("\n", 1)
-        if len(lines) > 1:
-            return f"{lines[0]}\n  🔑 密钥{masked_key}\n{lines[1]}"
-        return f"{text}\n  🔑 密钥{masked_key}\n"
+        """（已废弃，密钥格式现在由 output_template 的 {{api_key}} 控制）"""
+        return text
 
     def _get_provider_display_name(self, provider) -> str:
         """获取 Provider 的显示名称"""
@@ -626,9 +687,9 @@ class BalancePlugin(Star):
         if not result.error:
             result.source_name = display_name
 
-        msg = "💰 **当前余额查询**\n"
-        msg += "━━━━━━━━━━━━━━\n"
-        msg += result.to_string()
+        msg = self._header("当前余额查询")
+        msg += self._sep()
+        msg += self._format_result(result, self._mask_key(api_key))
         yield event.plain_result(msg)
 
     async def _query_all(self, event: AstrMessageEvent):
@@ -686,7 +747,7 @@ class BalancePlugin(Star):
             display_name = self._get_provider_display_name(provider_list[i])
             masked_key = self._mask_key(key_list[i])
             # 把密钥标签插入到首行（平台名）下方
-            text = self._insert_key_label(res.to_string(), masked_key)
+            text = self._format_result(res, masked_key)
             if res.error:
                 if "暂不支持" in res.error:
                     unsupported_ids.append(display_name)
@@ -697,21 +758,21 @@ class BalancePlugin(Star):
                 res.source_name = display_name
                 success_msgs.append(text)
 
-        msg = "💰 **全平台余额汇总**\n"
-        msg += "━━━━━━━━━━━━━━\n"
+        msg = self._header("全平台余额汇总")
+        msg += self._sep()
 
         if success_msgs:
             msg += "**查询成功:**\n"
-            msg += "\n\n".join(success_msgs)
+            msg += self._item_sep().join(success_msgs)
 
         if error_msgs:
-            msg += "\n" + "━━━━━━━━━━━━━━\n"
+            msg += self._section_sep()
             msg += "**查询失败:**\n"
-            msg += "\n\n".join(error_msgs)
+            msg += self._item_sep().join(error_msgs)
 
-        if unsupported_ids:
+        if unsupported_ids and self.config.get("show_unsupported", True):
             unique_unsupported = sorted(list(set(unsupported_ids)))
-            msg += "\n" + "━━━━━━━━━━━━━━\n"
+            msg += self._section_sep()
             msg += "⚪ **未适配平台**:\n  " + ", ".join(unique_unsupported)
 
         if not success_msgs and not error_msgs and not unsupported_ids:
@@ -766,9 +827,9 @@ class BalancePlugin(Star):
             result = await fetcher_cls().fetch(session, custom_api_key, api_base)
             result.source_name = display_name
 
-            msg = f"💰 **{display_name} 余额查询**\n"
-            msg += "━━━━━━━━━━━━━━\n"
-            msg += result.to_string()
+            msg = self._header(f"{display_name} 余额查询")
+            msg += self._sep()
+            msg += self._format_result(result, self._mask_key(custom_api_key))
             yield event.plain_result(msg)
             return
 
@@ -820,17 +881,17 @@ class BalancePlugin(Star):
             results = await asyncio.gather(*tasks)
 
             if len(results) == 1:
-                msg = f"💰 **{display_name} 余额查询**\n"
-                msg += "━━━━━━━━━━━━━━\n"
-                msg += results[0].to_string()
+                msg = self._header(f"{display_name} 余额查询")
+                msg += self._sep()
+                msg += self._format_result(results[0], self._mask_key(url_key_pairs[0][1]))
                 yield event.plain_result(msg)
             else:
-                msg = f"💰 **{display_name} 余额查询** ({len(results)} 个实例)\n"
-                msg += "━━━━━━━━━━━━━━\n"
+                msg = self._header(f"{display_name} 余额查询 ({len(results)} 个实例)")
+                msg += self._sep()
+                parts = []
                 for res, (url, key, label) in zip(results, url_key_pairs):
-                    msg += f"**{label}**\n"
-                    msg += res.to_string() + "\n\n"
-                yield event.plain_result(msg.strip())
+                    parts.append(f"**{label}**\n" + self._format_result(res, self._mask_key(key)))
+                msg += self._item_sep().join(parts)
             return
         if not matched_providers:
             yield event.plain_result(
@@ -874,35 +935,36 @@ class BalancePlugin(Star):
             res = results[0]
             if not res.error:
                 res.source_name = display_name
-            msg = f"💰 **{display_name} 余额查询**\n"
-            msg += "━━━━━━━━━━━━━━\n"
-            msg += res.to_string()
+            msg = self._header(f"{display_name} 余额查询")
+            msg += self._sep()
+            msg += self._format_result(res, self._mask_key(deduped_entries[0][1]))
             yield event.plain_result(msg)
         else:
             # 排序：成功的在前，失败的在后
             paired = list(zip(results, deduped_entries))
             paired.sort(key=lambda x: (x[0].error != "", self._mask_key(x[1][1])))
 
-            msg = f"💰 **{display_name} 余额查询** ({len(deduped_entries)} 个密钥)\n"
-            msg += "━━━━━━━━━━━━━━\n"
+            msg = self._header(f"{display_name} 余额查询 ({len(deduped_entries)} 个密钥)")
+            msg += self._sep()
 
             success_list = []
             error_list = []
             for res, (base, key) in paired:
                 if not res.error:
                     res.source_name = display_name
-                text = self._insert_key_label(res.to_string(), self._mask_key(key))
+                text = self._format_result(res, self._mask_key(key))
                 if res.error:
                     error_list.append(text)
                 else:
                     success_list.append(text)
 
             if success_list:
-                msg += "\n\n".join(success_list)
+                msg += self._item_sep().join(success_list)
             if error_list:
-                msg += "\n" + "━━━━━━━━━━━━━━\n"
+                if success_list:
+                    msg += self._section_sep()
                 msg += "**查询失败:**\n"
-                msg += "\n\n".join(error_list)
+                msg += self._item_sep().join(error_list)
             yield event.plain_result(msg)
 
     def _get_unique_platform_display_names(self) -> List[str]:
@@ -932,20 +994,20 @@ class BalancePlugin(Star):
         """获取帮助文本"""
         platforms = "、".join(self._get_unique_platform_display_names())
         return (
-            "💰 **余额查询插件**\n"
-            "━━━━━━━━━━━━━━\n"
-            "**使用方法:**\n"
-            "  /余额 当前 - 查询当前会话使用的模型余额\n"
-            "  /余额 所有 - 查询所有已配置模型的余额\n"
-            "  /余额 <平台简写> - 查询指定平台（配置中的）的余额\n"
-            "  /余额 <平台简写> <API密钥> - 直接用指定密钥查询该平台余额\n"
-            "\n"
-            "**支持的平台:**\n"
-            f"  {platforms}\n"
-            "\n"
-            f"{self._get_platform_aliases_text()}\n"
-            "\n"
-            "⚠️ **安全提醒**：包含 API 密钥的查询建议私聊使用，避免在群聊中泄露。"
+            self._header("余额查询插件")
+            + self._sep()
+            + "**使用方法:**\n"
+            + "  /余额 当前 - 查询当前会话使用的模型余额\n"
+            + "  /余额 所有 - 查询所有已配置模型的余额\n"
+            + "  /余额 <平台简写> - 查询指定平台（配置中的）的余额\n"
+            + "  /余额 <平台简写> <API密钥> - 直接用指定密钥查询该平台余额\n"
+            + "\n"
+            + "**支持的平台:**\n"
+            + f"  {platforms}\n"
+            + "\n"
+            + f"{self._get_platform_aliases_text()}\n"
+            + "\n"
+            + "⚠️ **安全提醒**：包含 API 密钥的查询建议私聊使用，避免在群聊中泄露。"
         )
 
     async def terminate(self):
