@@ -616,9 +616,9 @@ class BalancePlugin(Star):
             "success_template": "",
             "error_template": "🔴 **{{source_name}}**\n  ❌ {{error}}",
             "header_template": "💰 **{{title}}**",
-            "separator_template": "━━━━━━━━━━━━━━",
+            "separator_template": "════════════════════════════════════════",
             "item_separator_template": "",
-            "section_separator_template": "════════════════════",
+            "section_separator_template": "════════════════════════════════════════",
         }
         default = DEFAULT_TEMPLATES.get(key, "")
         tpl = self.config.get(key, "")
