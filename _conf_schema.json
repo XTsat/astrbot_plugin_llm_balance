@@ -1,0 +1,63 @@
+{
+  "admin_only": {
+    "description": "仅管理员可用",
+    "type": "bool",
+    "hint": "开启后只有管理员可以使用余额查询指令，建议在群聊中开启以保护API密钥隐私",
+    "default": false
+  },
+  "newapi_base_url": {
+    "description": "NEW API 基地址",
+    "type": "string",
+    "hint": "如果你的中转站是 NEW API，填写基地址，例如：https://your-newapi-server（不需要带 /api/usage/token）",
+    "default": ""
+  },
+  "request_timeout": {
+    "description": "请求超时时间",
+    "type": "float",
+    "hint": "单位：秒，API请求的最大等待时间",
+    "default": 10.0
+  },
+  "platform_aliases": {
+    "description": "平台别名配置",
+    "type": "object",
+    "hint": "为每个平台设置别名列表，多个用英文逗号分隔。既用于 /余额 <别名> 命令匹配，也用于自动识别 Provider（匹配 api_base）",
+    "items": {
+      "deepseek": {
+        "description": "DeepSeek 别名",
+        "type": "string",
+        "hint": "DeepSeek（深度求索）的别名，包含平台关键词和简写，多个用逗号分隔",
+        "default": "deepseek,ds,深度求索"
+      },
+      "siliconflow": {
+        "description": "硅基流动 别名",
+        "type": "string",
+        "hint": "硅基流动的别名，包含平台关键词和简写，多个用逗号分隔",
+        "default": "siliconflow,siliconcloud,硅基,硅基流动,sc"
+      },
+      "moonshot": {
+        "description": "Moonshot 别名",
+        "type": "string",
+        "hint": "Moonshot（Kimi）的别名，包含平台关键词和简写，多个用逗号分隔",
+        "default": "moonshot.cn,moonshot,kimi,月之暗面"
+      },
+      "openai": {
+        "description": "OpenAI 别名",
+        "type": "string",
+        "hint": "OpenAI 的别名，包含平台关键词和简写，多个用逗号分隔",
+        "default": "openai.com,openai,gpt,chatgpt"
+      },
+      "chatanywhere": {
+        "description": "ChatAnywhere 别名",
+        "type": "string",
+        "hint": "ChatAnywhere 的别名，包含平台关键词和简写，多个用逗号分隔",
+        "default": "chatanywhere,ca"
+      },
+      "newapi": {
+        "description": "NEW API 别名",
+        "type": "string",
+        "hint": "NEW API 中转站的别名，多个用逗号分隔（通常通过 newapi_base_url 识别）",
+        "default": "newapi,中转,new"
+      }
+    }
+  }
+}
