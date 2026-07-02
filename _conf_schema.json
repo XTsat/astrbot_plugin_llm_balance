@@ -23,12 +23,17 @@
     "hint": "在/余额 所有中是否显示未适配的平台列表",
     "default": true
   },
-  "output_template": {
-    "description": "余额显示模板",
+  "success_template": {
+    "description": "成功模板",
     "type": "text",
-    
-    "hint": "自定义每条余额的显示格式。{{?变量}} 表示值为空或0时隐藏该行。可用变量：{{api_key}} {{source_name}} {{currency}} {{balance}} {{total_balance}} {{remaining_balance}} {{used_balance}} {{raw_info}} {{smart_balance}}（智能附加信息）。",
-    "default": "🟢 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  💵 总额: {{balance}} {{currency}}\n  📊 已用: {{?used_balance}} {{currency}}\n  📝 {{?raw_info}}"
+    "hint": "成功查询的显示格式。{{?变量}} 表示值为空或0时隐藏该行。可用变量：{{api_key}}（脱敏密钥）、{{source_name}}（平台名称）、{{currency}}（币种）、{{balance}}（智能余额）、{{total_balance}}（总额）、{{remaining_balance}}（剩余）、{{used_balance}}（已用）、{{raw_info}}（备注）、{{smart_balance}}（智能附加信息）。",
+    "default": "🟢 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  💵 {{balance}} {{currency}}\n{{smart_balance}}"
+  },
+  "error_template": {
+    "description": "失败模板",
+    "type": "text",
+    "hint": "查询失败时的显示格式。可用变量：{{api_key}}（脱敏密钥）、{{source_name}}（平台名称）、{{error}}（错误信息）。",
+    "default": "🔴 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  ❌ {{error}}"
   },
   "header_template": {
     "description": "标题模板",

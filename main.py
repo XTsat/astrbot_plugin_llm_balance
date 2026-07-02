@@ -52,9 +52,26 @@ class BalanceResult:
             parts.append(f"{indent}📝 {self.raw_info}")
         return "\n".join(parts) if parts else ""
 
-    def to_string(self, template: str = "", api_key: str = "") -> str:
+    def to_string(self, success_template: str = "", error_template: str = "", api_key: str = "") -> str:
         if self.error:
-            return f"🔴 **{self.source_name}**\n  ❌ {self.error}"
+            return self._render_error(error_template, api_key)
+        return self._render_success(success_template, api_key)
+
+    def _render_error(self, template: str, api_key: str) -> str:
+        """渲染错误模板"""
+        if not template:
+            template = "🔴 **{{source_name}}**\n  ❌ {{error}}"
+        replacements = {
+            "{{api_key}}": api_key,
+            "{{source_name}}": self.source_name,
+            "{{error}}": self.error,
+        }
+        result = template
+        for key, value in replacements.items():
+            result = result.replace(key, str(value))
+        return result.replace("\\n", "\n")
+
+    def _render_success(self, template: str, api_key: str) -> str:
         if not template:
             return self._get_default_string()
 
@@ -570,7 +587,9 @@ class BalancePlugin(Star):
     def _item_sep(self) -> str:
         """获取项间分隔符（默认空行）"""
         sep = self._get_template("item_separator_template")
-        return sep if sep else "\n\n"
+        if not sep:
+            return "\n\n"
+        return "\n" + sep + "\n"
 
     def _sep(self) -> str:
         """获取标题分隔线"""
@@ -587,13 +606,15 @@ class BalancePlugin(Star):
 
     def _format_result(self, res: "BalanceResult", masked_key: str = "") -> str:
         """根据模板格式化余额结果"""
-        template = self._get_template("output_template")
-        return res.to_string(template, api_key=masked_key)
+        success_tpl = self._get_template("success_template")
+        error_tpl = self._get_template("error_template")
+        return res.to_string(success_tpl, error_tpl, api_key=masked_key)
 
     def _get_template(self, key: str) -> str:
         """获取并处理模板（处理 \\n 转义）"""
         DEFAULT_TEMPLATES = {
-            "output_template": "",
+            "success_template": "",
+            "error_template": "🔴 **{{source_name}}**\n  ❌ {{error}}",
             "header_template": "💰 **{{title}}**",
             "separator_template": "━━━━━━━━━━━━━━",
             "item_separator_template": "",
