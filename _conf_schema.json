@@ -7,8 +7,8 @@
   },
   "newapi_base_url": {
     "description": "NEW API 基地址",
-    "type": "string",
-    "hint": "如果你的中转站是 NEW API，填写基地址，例如：https://your-newapi-server（不需要带 /api/usage/token）",
+    "type": "text",
+    "hint": "填写你的 NEW API 中转站地址，每行一个。例如：http://192.168.1.1:3000（不需要带 /api/usage/token）",
     "default": ""
   },
   "request_timeout": {
