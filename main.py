@@ -699,7 +699,8 @@ class BalancePlugin(Star):
         if full_text.startswith("余额"):
             full_text = full_text[len("余额"):].strip()
         parts = full_text.split(maxsplit=1)
-        sub_command = parts[0].lower() if parts else ""
+        raw_sub = parts[0] if parts else ""
+        sub_command = raw_sub.lower()
 
         if sub_command == "" or sub_command == "帮助" or sub_command == "help":
             yield event.plain_result(self._get_help_text())
@@ -710,12 +711,14 @@ class BalancePlugin(Star):
             async for msg in self._query_all(event):
                 yield msg
         elif sub_command.startswith("http://") or sub_command.startswith("https://"):
-            # 视为自定义 API 端点 URL
             extra = parts[1].strip() if len(parts) > 1 else ""
             async for msg in self._query_custom(event, sub_command, extra):
                 yield msg
+        elif raw_sub.startswith("{"):
+            extra = parts[1].strip() if len(parts) > 1 else ""
+            async for msg in self._query_newapi_conn_info(event, raw_sub, extra):
+                yield msg
         else:
-            # 视为平台名称，支持后面跟 API Key 参数
             extra = parts[1].strip() if len(parts) > 1 else ""
             async for msg in self._query_by_platform(event, sub_command, extra):
                 yield msg
@@ -1012,6 +1015,33 @@ class BalancePlugin(Star):
             f"{api_base} 余额查询", valid_keys,
             lambda s, k: self._query_openai_compatible(s, k, api_base),
         )
+        yield event.plain_result(msg)
+
+    async def _query_newapi_conn_info(self, event: AstrMessageEvent, json_text: str, extra_args: str = ""):
+        """解析 NewAPI 复制连接信息 JSON 并查询余额"""
+        import json
+        try:
+            config = json.loads(json_text)
+        except json.JSONDecodeError:
+            yield event.plain_result(f"❌ 无法解析 JSON 配置。")
+            return
+
+        if config.get("_type") != "newapi_channel_conn":
+            yield event.plain_result(f"❌ 不支持的配置类型: {config.get('_type')}")
+            return
+
+        api_key = config.get("key", "")
+        api_url = config.get("url", "")
+        if not api_key or not api_url:
+            yield event.plain_result(f"❌ 配置中缺少 key 或 url。")
+            return
+
+        yield event.plain_result(f"🔄 正在查询 {api_url} 的余额，请稍候...")
+        session = await self.manager._get_session()
+        result = await NewApiFetcher().fetch(session, api_key, api_url)
+        msg = self._header(f"{api_url} 余额查询")
+        msg += self._sep()
+        msg += self._format_result(result, self._mask_key(api_key))
         yield event.plain_result(msg)
 
     async def _query_openai_compatible(self, session: aiohttp.ClientSession, api_key: str, base_url: str) -> BalanceResult:

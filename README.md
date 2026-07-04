@@ -24,6 +24,7 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 /余额 <平台简写>                     # 查询指定 AstrBot 配置平台的余额
 /余额 <平台简写> <key1> [key2]...   # 批量查询指定平台的多个密钥余额
 /余额 <API端口> <key1> [key2]...    # 查询自定义 API 端点的余额（自动识别 OpenAI/New API）
+/余额 <JSON配置>                    # 直接粘贴 NewAPI 复制连接信息查询余额
 ```
 
 ## 支持的平台
@@ -128,6 +129,16 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 ```
 
 查询结果按成功/失败分组展示。
+
+## 粘贴 NewAPI 连接信息
+
+在 NewAPI 面板中复制连接信息后，直接粘贴到 `/余额` 后面即可查询：
+
+```
+/余额 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
+```
+
+插件自动解析 JSON 中的 key 和 url 并用 NewAPI 格式查询余额。
 
 ## NEW API 多实例
 
