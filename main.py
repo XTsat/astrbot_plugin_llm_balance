@@ -7,7 +7,7 @@ from typing import List, Optional
 import aiohttp
 
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.api import logger, AstrBotConfig
 
 
@@ -485,7 +485,6 @@ class BalanceManager:
 
 # ==================== 主插件类 ====================
 
-@register("astrbot_plugin_llm_balance", "YourName", "查询大模型平台余额", "v1.0.0")
 class BalancePlugin(Star):
     """大模型余额查询插件
 
@@ -647,14 +646,7 @@ class BalancePlugin(Star):
 
     @filter.command("余额")
     async def balance(self, event: AstrMessageEvent):
-        """查询大模型平台余额
-
-        用法：
-            /余额 当前      - 查询当前会话使用的模型余额
-            /余额 所有      - 查询所有已配置模型的余额
-            /余额 <平台名>  - 查询指定平台的余额
-            /余额          - 显示帮助
-        """
+        """查询大模型平台余额。输入 /余额 查看完整帮助。"""
         # 权限检查
         if not self._is_admin(event):
             yield event.plain_result("🚫 只有管理员可以使用此指令。")
@@ -676,6 +668,11 @@ class BalancePlugin(Star):
                 yield msg
         elif sub_command == "所有":
             async for msg in self._query_all(event):
+                yield msg
+        elif sub_command.startswith("http://") or sub_command.startswith("https://"):
+            # 视为自定义 API 端点 URL
+            extra = parts[1].strip() if len(parts) > 1 else ""
+            async for msg in self._query_custom(event, sub_command, extra):
                 yield msg
         else:
             # 视为平台名称，支持后面跟 API Key 参数
@@ -801,8 +798,8 @@ class BalancePlugin(Star):
 
         yield event.plain_result(msg)
 
-    async def _query_by_platform(self, event: AstrMessageEvent, platform_name: str, custom_api_key: str = ""):
-        """根据平台简写/名称查询余额，支持传入自定义 API Key"""
+    async def _query_by_platform(self, event: AstrMessageEvent, platform_name: str, extra_args: str = ""):
+        """根据平台简写/名称查询余额，支持传入自定义 API Key 列表（自动识别 sk- 开头的令牌）"""
         name_lower = platform_name.lower().strip()
 
         # 1. 通过简写映射查找平台 key
@@ -818,10 +815,18 @@ class BalancePlugin(Star):
         platform_info = self.PLATFORMS[platform_key]
         display_name = platform_info["display_name"]
 
-        # 2. 如果用户传入了自定义 API Key，直接用它查询
-        if custom_api_key:
-            yield event.plain_result(f"🔄 正在查询 {display_name} 的余额，请稍候...")
-            session = await self.manager._get_session()
+        # 2. 如果用户传入了额外参数，尝试提取其中的 API Key
+        if extra_args:
+            tokens = extra_args.split()
+            # 自动识别以 sk- 开头的令牌
+            valid_keys = [t for t in tokens if t.startswith("sk-")]
+
+            if not valid_keys:
+                yield event.plain_result(
+                    f"❌ 在参数中未检测到有效的 API Key（需要以 sk- 开头）。\n"
+                    f"输入内容: {extra_args}"
+                )
+                return
 
             # 通过 platform_key 找到对应的 fetcher
             fetcher_map = {
@@ -845,13 +850,43 @@ class BalancePlugin(Star):
                     return
                 api_base = self.manager.newapi_urls[0]
 
-            result = await fetcher_cls().fetch(session, custom_api_key, api_base)
-            result.source_name = display_name
+            if len(valid_keys) == 1:
+                key = valid_keys[0]
+                yield event.plain_result(f"🔄 正在查询 {display_name} 的余额，请稍候...")
+                session = await self.manager._get_session()
+                result = await fetcher_cls().fetch(session, key, api_base)
+                result.source_name = display_name
+                msg = self._header(f"{display_name} 余额查询")
+                msg += self._sep()
+                msg += self._format_result(result, self._mask_key(key))
+                yield event.plain_result(msg)
+            else:
+                yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个 {display_name} 密钥的余额，请稍候...")
+                session = await self.manager._get_session()
+                tasks = [fetcher_cls().fetch(session, key, api_base) for key in valid_keys]
+                results = await asyncio.gather(*tasks)
 
-            msg = self._header(f"{display_name} 余额查询")
-            msg += self._sep()
-            msg += self._format_result(result, self._mask_key(custom_api_key))
-            yield event.plain_result(msg)
+                success_list = []
+                error_list = []
+                for res, key in zip(results, valid_keys):
+                    if not res.error:
+                        res.source_name = display_name
+                    text = self._format_result(res, self._mask_key(key))
+                    if res.error:
+                        error_list.append(text)
+                    else:
+                        success_list.append(text)
+
+                msg = self._header(f"{display_name} 余额查询 ({len(valid_keys)} 个密钥)")
+                msg += self._sep()
+                if success_list:
+                    msg += self._item_sep().join(success_list)
+                if error_list:
+                    if success_list:
+                        msg += self._section_sep()
+                    msg += "**查询失败:**\n"
+                    msg += self._item_sep().join(error_list)
+                yield event.plain_result(msg)
             return
 
         # 3. 没有自定义 API Key，从已配置的 provider 中查找
@@ -988,6 +1023,148 @@ class BalancePlugin(Star):
                 msg += self._item_sep().join(error_list)
             yield event.plain_result(msg)
 
+    async def _query_custom(self, event: AstrMessageEvent, api_base: str, extra_args: str = ""):
+        """查询自定义 API 端点的余额"""
+        api_base = api_base.rstrip("/")
+        if "/v1" in api_base:
+            api_base = api_base.split("/v1")[0]
+
+        tokens = extra_args.split()
+        valid_keys = [t for t in tokens if t.startswith("sk-")]
+
+        if not valid_keys:
+            yield event.plain_result(
+                f"❌ 未检测到有效的 API Key（需要以 sk- 开头）。\n"
+                f"输入内容: {extra_args}"
+            )
+            return
+
+        display_name = f"自定义端点"
+
+        if len(valid_keys) == 1:
+            key = valid_keys[0]
+            yield event.plain_result(f"🔄 正在查询 {display_name} 的余额，请稍候...")
+            session = await self.manager._get_session()
+            result = await self._query_openai_compatible(session, key, api_base)
+            msg = self._header(f"{api_base} 余额查询")
+            msg += self._sep()
+            msg += self._format_result(result, self._mask_key(key))
+            yield event.plain_result(msg)
+        else:
+            yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个 {display_name} 密钥的余额，请稍候...")
+            session = await self.manager._get_session()
+            tasks = [self._query_openai_compatible(session, key, api_base) for key in valid_keys]
+            results = await asyncio.gather(*tasks)
+
+            success_list = []
+            error_list = []
+            for res, key in zip(results, valid_keys):
+                text = self._format_result(res, self._mask_key(key))
+                if res.error:
+                    error_list.append(text)
+                else:
+                    success_list.append(text)
+
+            msg = self._header(f"{api_base} 余额查询 ({len(valid_keys)} 个密钥)")
+            msg += self._sep()
+            if success_list:
+                msg += self._item_sep().join(success_list)
+            if error_list:
+                if success_list:
+                    msg += self._section_sep()
+                msg += "**查询失败:**\n"
+                msg += self._item_sep().join(error_list)
+            yield event.plain_result(msg)
+
+    async def _query_openai_compatible(self, session: aiohttp.ClientSession, api_key: str, base_url: str) -> BalanceResult:
+        """查询自定义端点余额，优先 OpenAI Billing API，降级 New API 格式"""
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+        }
+
+        # 尝试 OpenAI Billing API
+        account_balance = 0.0
+        has_payment = False
+        access_until = "无限制"
+
+        try:
+            sub_url = f"{base_url}/v1/dashboard/billing/subscription"
+            async with session.get(sub_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    sub_data = await resp.json()
+                    if isinstance(sub_data, dict):
+                        account_balance = float(sub_data.get("soft_limit_usd", sub_data.get("hard_limit_usd", 0)))
+                        has_payment = sub_data.get("has_payment_method", False)
+                        access_until = sub_data.get("access_until", "无限制")
+                    elif isinstance(sub_data, list) and sub_data:
+                        account_balance = float(sub_data[0].get("soft_limit_usd", 0))
+                        has_payment = sub_data[0].get("has_payment_method", False)
+                        access_until = sub_data[0].get("access_until", "无限制")
+
+            if account_balance != 0:
+                usage_url = f"{base_url}/v1/dashboard/billing/usage?start_date={datetime.today().strftime('%Y-%m-%d')}&end_date={datetime.today().strftime('%Y-%m-%d')}"
+                used_balance = 0.0
+                try:
+                    async with session.get(usage_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            usage_data = await resp.json()
+                            used_balance = float(usage_data.get("total_usage", 0)) / 100
+                except Exception:
+                    pass
+
+                remaining = account_balance - used_balance
+                return BalanceResult(
+                    source_name="自定义端点",
+                    currency="USD",
+                    total_balance=f"{account_balance:.2f}",
+                    remaining_balance=f"{remaining:.2f}",
+                    used_balance=f"{used_balance:.2f}",
+                    raw_info=f"{base_url} | 支付: {'是' if has_payment else '否'} | 到期: {access_until}"
+                )
+        except Exception:
+            pass
+
+        # 降级尝试 New API 格式
+        try:
+            url = base_url.rstrip('/') + "/api/usage/token"
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                try:
+                    data = await resp.json()
+                except Exception:
+                    text = await resp.text()
+                    return BalanceResult("自定义端点", "Unknown", "0",
+                        error=f"New API 返回非JSON(HTTP {resp.status}): {text[:200]}")
+
+            ok_flag = bool(data.get("code", False) or data.get("success", False))
+            if ok_flag and "data" in data:
+                d = data["data"] or {}
+                total_granted = d.get("total_granted", 0)
+                total_used = d.get("total_used", 0)
+                total_available = d.get("total_available", 0)
+                unlimited = d.get("unlimited_quota", False)
+                expires_at = d.get("expires_at", 0)
+                expires_str = "永不过期" if not expires_at else datetime.fromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M:%S")
+
+                return BalanceResult(
+                    source_name="自定义端点",
+                    currency="",
+                    total_balance=str(total_granted),
+                    used_balance=str(total_used),
+                    remaining_balance=str(total_available),
+                    raw_info=f"{base_url} | 无限额度: {'是' if unlimited else '否'} | 到期: {expires_str}"
+                )
+
+            err = data.get("message", "未知错误") if isinstance(data, dict) else str(data)[:200]
+            return BalanceResult("自定义端点", "Unknown", "0", error=f"New API 返回错误: {err}")
+        except aiohttp.ClientError as e:
+            return BalanceResult("自定义端点", "Unknown", "0", error=f"New API 请求失败: {e}")
+        except Exception as e:
+            return BalanceResult("自定义端点", "Unknown", "0", error=f"New API 处理异常: {e}")
+
+        return BalanceResult("自定义端点", "Unknown", "0", error="无法获取余额信息 (API不支持或返回为空)")
+
     def _get_unique_platform_display_names(self) -> List[str]:
         """获取所有支持平台的显示名称列表"""
         return [info["display_name"] for info in self.PLATFORMS.values()]
@@ -1020,8 +1197,9 @@ class BalancePlugin(Star):
             + "**使用方法:**\n"
             + "  /余额 当前 - 查询当前会话使用的模型余额\n"
             + "  /余额 所有 - 查询所有已配置模型的余额\n"
-            + "  /余额 <平台简写> - 查询指定平台（配置中的）的余额\n"
-            + "  /余额 <平台简写> <API密钥> - 直接用指定密钥查询该平台余额\n"
+            + "  /余额 <平台简写> - 查询指定平台余额（配置中的或自带站点）\n"
+            + "  /余额 <平台简写> <key1> [key2]... - 批量查询自带平台的多个密钥余额\n"
+            + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（自动识别 OpenAI/New API）\n"
             + "\n"
             + "**支持的平台:**\n"
             + f"  {platforms}\n"

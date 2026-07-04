@@ -8,6 +8,8 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 - 查询所有已配置模型的余额（自动去重，并发查询）
 - 按平台简写查询指定平台余额（支持多密钥）
 - 命令后直接传 API Key 查询（无需在 AstrBot 中配置）
+- 批量查询多个 API Key（自动识别 `sk-` 开头的令牌）
+- 自定义 API 端点余额查询（支持 OpenAI Billing 与 New API 兼容端点）
 - 可自定义平台别名（用于命令匹配和 Provider 自动识别）
 - 管理员权限控制
 - 完全可自定义的输出模板（成功/失败/标题/分隔符）
@@ -16,11 +18,12 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 ## 使用方法
 
 ```
-/余额                    # 显示帮助
-/余额 当前               # 查询当前会话使用的模型余额
-/余额 所有               # 查询所有已配置模型的余额
-/余额 <平台简写>          # 查询指定 AstrBot 配置平台的余额
-/余额 <平台简写> <API密钥> # 直接用指定密钥查询该平台余额
+/余额                               # 显示帮助
+/余额 当前                          # 查询当前会话使用的模型余额
+/余额 所有                          # 查询所有已配置模型的余额
+/余额 <平台简写>                     # 查询指定 AstrBot 配置平台的余额
+/余额 <平台简写> <key1> [key2]...   # 批量查询指定平台的多个密钥余额
+/余额 <API端口> <key1> [key2]...    # 查询自定义 API 端点的余额（自动识别 OpenAI/New API）
 ```
 
 ## 支持的平台
@@ -100,6 +103,31 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 #### section_separator_template — 区块分隔符
 
 成功/失败/未适配区块之间。默认值：`════════════════════════════════════════`
+
+## 自定义 API 端点查询
+
+支持查询未在预置列表中的 API 中转站余额。命令以 `http://` 或 `https://` 开头时自动进入自定义端点模式：
+
+```
+/余额 https://your-api.com/v1 sk-xxxx1 sk-xxxx2
+```
+
+查询流程自动降级：
+1. **优先**尝试 OpenAI Billing API（`/v1/dashboard/billing/subscription` + `/usage`）
+2. **降级**尝试 New API 格式（`/api/usage/token`）
+
+适用于 one-api、new-api、AIProxy 等各类中转站。
+
+## 批量查询
+
+在平台简写或 API 端点后跟多个以 `sk-` 开头的密钥，自动识别并并发查询：
+
+```
+/余额 ds sk-xxx1 sk-xxx2 sk-xxx3
+/余额 https://api.example.com/v1 sk-xxx1 sk-xxx2
+```
+
+查询结果按成功/失败分组展示。
 
 ## NEW API 多实例
 
