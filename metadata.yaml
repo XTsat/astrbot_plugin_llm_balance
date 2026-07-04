@@ -1,6 +1,6 @@
 name: astrbot_plugin_llm_balance
 display_name: 大模型余额查询
 desc: 查询各大模型平台余额，支持当前模型、所有模型、指定平台查询
-version: v1.3.0
+version: v1.3.1
 author: XTsat
 repo: https://github.com/XTsat/astrbot_plugin_llm_balance

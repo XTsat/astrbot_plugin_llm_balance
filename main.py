@@ -369,9 +369,6 @@ class OpenAIFetcher(BaseBalanceFetcher):
         )
 
 
-NEWAPI_TOKEN_USAGE_PATH = "/api/usage/token"
-
-
 class NewApiFetcher(BaseBalanceFetcher):
     aliases = ["newapi", "new api", "new_api", "中转"]
 
@@ -383,7 +380,7 @@ class NewApiFetcher(BaseBalanceFetcher):
         if not api_base:
             return BalanceResult("NEW API", "Unknown", "0", error="未配置 API Base URL")
 
-        url = api_base.rstrip('/') + NEWAPI_TOKEN_USAGE_PATH
+        url = api_base.rstrip('/') + "/api/usage/token"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json"
@@ -503,6 +500,15 @@ class BalancePlugin(Star):
         "openai": {"display_name": "OpenAI"},
         "chatanywhere": {"display_name": "ChatAnywhere"},
         "newapi": {"display_name": "NEW API"},
+    }
+
+    FETCHER_MAP = {
+        "deepseek": DeepSeekFetcher,
+        "siliconflow": SiliconCloudFetcher,
+        "moonshot": MoonshotFetcher,
+        "openai": OpenAIFetcher,
+        "chatanywhere": ChatAnywhereFetcher,
+        "newapi": NewApiFetcher,
     }
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -625,9 +631,43 @@ class BalancePlugin(Star):
             tpl = default
         return tpl
 
-    def _insert_key_label(self, text: str, masked_key: str) -> str:
-        """（已废弃，密钥格式现在由 output_template 的 {{api_key}} 控制）"""
-        return text
+    def _extract_keys(self, text: str) -> List[str]:
+        """从文本中提取以 sk- 开头的 API Key"""
+        return [t for t in text.split() if t.startswith("sk-")]
+
+    def _format_multi_results(self, title: str, results, keys, display_name: str = "") -> str:
+        """将多个查询结果格式化为结果字符串（按成功/失败分组）"""
+        success_list = []
+        error_list = []
+        for res, key in zip(results, keys):
+            if display_name and not res.error:
+                res.source_name = display_name
+            text = self._format_result(res, self._mask_key(key))
+            (error_list if res.error else success_list).append(text)
+
+        if len(keys) == 1:
+            msg = self._header(title)
+            msg += self._sep()
+            msg += (success_list[0] if success_list else error_list[0])
+            return msg
+
+        msg = self._header(f"{title} ({len(keys)} 个密钥)")
+        msg += self._sep()
+        if success_list:
+            msg += self._item_sep().join(success_list)
+        if error_list:
+            if success_list:
+                msg += self._section_sep()
+            msg += "**查询失败:**\n"
+            msg += self._item_sep().join(error_list)
+        return msg
+
+    async def _query_and_format(self, title, keys, fetch_fn, display_name="") -> str:
+        """并发查询多个 key 并格式化"""
+        session = await self.manager._get_session()
+        tasks = [fetch_fn(session, key) for key in keys]
+        results = await asyncio.gather(*tasks)
+        return self._format_multi_results(title, results, keys, display_name)
 
     def _get_provider_display_name(self, provider) -> str:
         """获取 Provider 的显示名称"""
@@ -817,10 +857,7 @@ class BalancePlugin(Star):
 
         # 2. 如果用户传入了额外参数，尝试提取其中的 API Key
         if extra_args:
-            tokens = extra_args.split()
-            # 自动识别以 sk- 开头的令牌
-            valid_keys = [t for t in tokens if t.startswith("sk-")]
-
+            valid_keys = self._extract_keys(extra_args)
             if not valid_keys:
                 yield event.plain_result(
                     f"❌ 在参数中未检测到有效的 API Key（需要以 sk- 开头）。\n"
@@ -828,21 +865,11 @@ class BalancePlugin(Star):
                 )
                 return
 
-            # 通过 platform_key 找到对应的 fetcher
-            fetcher_map = {
-                "deepseek": DeepSeekFetcher,
-                "siliconflow": SiliconCloudFetcher,
-                "moonshot": MoonshotFetcher,
-                "openai": OpenAIFetcher,
-                "chatanywhere": ChatAnywhereFetcher,
-                "newapi": NewApiFetcher,
-            }
-            fetcher_cls = fetcher_map.get(platform_key)
+            fetcher_cls = self.FETCHER_MAP.get(platform_key)
             if not fetcher_cls:
                 yield event.plain_result(f"❌ 找不到 {display_name} 的查询器。")
                 return
 
-            # 对于 NEW API，需要用配置的 base_url
             api_base = ""
             if platform_key == "newapi":
                 if not self.manager.newapi_urls:
@@ -850,43 +877,13 @@ class BalancePlugin(Star):
                     return
                 api_base = self.manager.newapi_urls[0]
 
-            if len(valid_keys) == 1:
-                key = valid_keys[0]
-                yield event.plain_result(f"🔄 正在查询 {display_name} 的余额，请稍候...")
-                session = await self.manager._get_session()
-                result = await fetcher_cls().fetch(session, key, api_base)
-                result.source_name = display_name
-                msg = self._header(f"{display_name} 余额查询")
-                msg += self._sep()
-                msg += self._format_result(result, self._mask_key(key))
-                yield event.plain_result(msg)
-            else:
-                yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个 {display_name} 密钥的余额，请稍候...")
-                session = await self.manager._get_session()
-                tasks = [fetcher_cls().fetch(session, key, api_base) for key in valid_keys]
-                results = await asyncio.gather(*tasks)
-
-                success_list = []
-                error_list = []
-                for res, key in zip(results, valid_keys):
-                    if not res.error:
-                        res.source_name = display_name
-                    text = self._format_result(res, self._mask_key(key))
-                    if res.error:
-                        error_list.append(text)
-                    else:
-                        success_list.append(text)
-
-                msg = self._header(f"{display_name} 余额查询 ({len(valid_keys)} 个密钥)")
-                msg += self._sep()
-                if success_list:
-                    msg += self._item_sep().join(success_list)
-                if error_list:
-                    if success_list:
-                        msg += self._section_sep()
-                    msg += "**查询失败:**\n"
-                    msg += self._item_sep().join(error_list)
-                yield event.plain_result(msg)
+            yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个 {display_name} 密钥的余额，请稍候...")
+            msg = await self._query_and_format(
+                f"{display_name} 余额查询", valid_keys,
+                lambda s, k: fetcher_cls().fetch(s, k, api_base),
+                display_name,
+            )
+            yield event.plain_result(msg)
             return
 
         # 3. 没有自定义 API Key，从已配置的 provider 中查找
@@ -983,45 +980,18 @@ class BalancePlugin(Star):
         yield event.plain_result(f"🔄 匹配到 {len(deduped_entries)} 个 {display_name} 密钥，正在并发查询...")
 
         # 并发查询所有 key
+        keys = [k for _, k in deduped_entries]
         tasks = [self.manager.query(key, base) for base, key in deduped_entries]
         results = await asyncio.gather(*tasks)
 
-        # 组装输出
-        if len(deduped_entries) == 1:
-            res = results[0]
-            if not res.error:
-                res.source_name = display_name
-            msg = self._header(f"{display_name} 余额查询")
-            msg += self._sep()
-            msg += self._format_result(res, self._mask_key(deduped_entries[0][1]))
-            yield event.plain_result(msg)
-        else:
-            # 排序：成功的在前，失败的在后
-            paired = list(zip(results, deduped_entries))
-            paired.sort(key=lambda x: (x[0].error != "", self._mask_key(x[1][1])))
+        # 排序：成功的在前，失败的在后
+        paired = list(zip(results, keys))
+        paired.sort(key=lambda x: (x[0].error != "", self._mask_key(x[1])))
+        results = [r for r, _ in paired]
+        keys = [k for _, k in paired]
 
-            msg = self._header(f"{display_name} 余额查询 ({len(deduped_entries)} 个密钥)")
-            msg += self._sep()
-
-            success_list = []
-            error_list = []
-            for res, (base, key) in paired:
-                if not res.error:
-                    res.source_name = display_name
-                text = self._format_result(res, self._mask_key(key))
-                if res.error:
-                    error_list.append(text)
-                else:
-                    success_list.append(text)
-
-            if success_list:
-                msg += self._item_sep().join(success_list)
-            if error_list:
-                if success_list:
-                    msg += self._section_sep()
-                msg += "**查询失败:**\n"
-                msg += self._item_sep().join(error_list)
-            yield event.plain_result(msg)
+        msg = self._format_multi_results(f"{display_name} 余额查询", results, keys, display_name)
+        yield event.plain_result(msg)
 
     async def _query_custom(self, event: AstrMessageEvent, api_base: str, extra_args: str = ""):
         """查询自定义 API 端点的余额"""
@@ -1029,9 +999,7 @@ class BalancePlugin(Star):
         if "/v1" in api_base:
             api_base = api_base.split("/v1")[0]
 
-        tokens = extra_args.split()
-        valid_keys = [t for t in tokens if t.startswith("sk-")]
-
+        valid_keys = self._extract_keys(extra_args)
         if not valid_keys:
             yield event.plain_result(
                 f"❌ 未检测到有效的 API Key（需要以 sk- 开头）。\n"
@@ -1039,42 +1007,12 @@ class BalancePlugin(Star):
             )
             return
 
-        display_name = f"自定义端点"
-
-        if len(valid_keys) == 1:
-            key = valid_keys[0]
-            yield event.plain_result(f"🔄 正在查询 {display_name} 的余额，请稍候...")
-            session = await self.manager._get_session()
-            result = await self._query_openai_compatible(session, key, api_base)
-            msg = self._header(f"{api_base} 余额查询")
-            msg += self._sep()
-            msg += self._format_result(result, self._mask_key(key))
-            yield event.plain_result(msg)
-        else:
-            yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个 {display_name} 密钥的余额，请稍候...")
-            session = await self.manager._get_session()
-            tasks = [self._query_openai_compatible(session, key, api_base) for key in valid_keys]
-            results = await asyncio.gather(*tasks)
-
-            success_list = []
-            error_list = []
-            for res, key in zip(results, valid_keys):
-                text = self._format_result(res, self._mask_key(key))
-                if res.error:
-                    error_list.append(text)
-                else:
-                    success_list.append(text)
-
-            msg = self._header(f"{api_base} 余额查询 ({len(valid_keys)} 个密钥)")
-            msg += self._sep()
-            if success_list:
-                msg += self._item_sep().join(success_list)
-            if error_list:
-                if success_list:
-                    msg += self._section_sep()
-                msg += "**查询失败:**\n"
-                msg += self._item_sep().join(error_list)
-            yield event.plain_result(msg)
+        yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个密钥的余额，请稍候...")
+        msg = await self._query_and_format(
+            f"{api_base} 余额查询", valid_keys,
+            lambda s, k: self._query_openai_compatible(s, k, api_base),
+        )
+        yield event.plain_result(msg)
 
     async def _query_openai_compatible(self, session: aiohttp.ClientSession, api_key: str, base_url: str) -> BalanceResult:
         """查询自定义端点余额，优先 OpenAI Billing API，降级 New API 格式"""
