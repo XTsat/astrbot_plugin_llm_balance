@@ -156,9 +156,21 @@ class DeepSeekFetcher(BaseBalanceFetcher):
                 return BalanceResult("DeepSeek", "Unknown", "0", error=f"HTTP {response.status}: {text}")
 
             data = await response.json()
-            if not data.get("is_available"):
-                return BalanceResult("DeepSeek", "Unknown", "0", error="账户状态不可用")
             infos = data.get("balance_infos", [])
+            if not data.get("is_available"):
+                # 区分"余额不足/欠费"与"账户不可用（封禁/冻结）"，避免误导用户
+                if infos:
+                    info = infos[0]
+                    currency = info.get("currency", "CNY")
+                    total = info.get("total_balance", "0")
+                    try:
+                        total_num = float(total)
+                    except (TypeError, ValueError):
+                        total_num = 0.0
+                    if total_num <= 0:
+                        reason = "已欠费" if total_num < 0 else "余额不足"
+                        return BalanceResult("DeepSeek", currency, str(total), error=f"{reason}（当前余额 {total} {currency}）")
+                return BalanceResult("DeepSeek", "Unknown", "0", error="账户状态不可用（可能被封禁或冻结）")
             if not infos:
                 return BalanceResult("DeepSeek", "Unknown", "0", error="未找到余额信息")
 
