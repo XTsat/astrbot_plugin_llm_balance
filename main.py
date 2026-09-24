@@ -1,4 +1,5 @@
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -104,6 +105,55 @@ class BalanceResult:
             result = result.replace(key, str(value))
             result = result.replace(key.replace("{{", "{{?"), str(value))
         return result.replace("\\n", "\n")
+
+
+# 模型可用性测试：明显非聊天类模型名特征
+NON_CHAT_HINTS = (
+    "embedding", "embed", "whisper", "tts", "stt", "asr", "rerank", "rank",
+    "moderation", "image", "dall-e", "dalle", "audio", "transcribe", "translate",
+    "vector", "ocr", "diarize",
+)
+# 模型可用性测试：优先实测的聊天/生成类模型名特征
+CHAT_KEY_HINTS = (
+    "chat", "gpt", "deepseek", "qwen", "kimi", "glm", "moonshot", "claude",
+    "llama", "gemini", "mistral", "yi-", "ernie", "doubao", "hunyuan",
+)
+
+
+@dataclass
+class ModelTestResult:
+    """统一的模型可用性测试结果"""
+    source_name: str
+    is_available: bool = False
+    models: list = None
+    tested_models: list = None
+    latency_ms: int = 0
+    status_code: int = 0
+    raw_info: str = ""
+    error: str = None
+    specified: bool = False
+
+    def to_string(self, api_key: str = "") -> str:
+        indent = "  "
+        head_icon = "🟢" if not self.error else "🔴"
+        msg = f"{head_icon} **{self.source_name}**\n"
+        if api_key:
+            msg += f"{indent}🔑 密钥: {api_key}\n"
+        if self.error:
+            msg += f"{indent}❌ {self.error}"
+            return msg
+        msg += f"{indent}✅ 连接成功 · 响应 {self.latency_ms}ms (HTTP {self.status_code})\n"
+        if self.models:
+            shown = "、".join(self.models[:8])
+            if len(self.models) > 8:
+                shown += f" 等 {len(self.models)} 个"
+            msg += f"{indent}🧠 可用模型 {len(self.models)}: {shown}\n"
+        if self.tested_models:
+            label = "指定模型" if self.specified else "测试模型"
+            msg += f"{indent}🎯 {label}: " + " / ".join(self.tested_models) + " ✅ 可用"
+        if self.raw_info:
+            msg += f"\n{indent}📝 {self.raw_info}"
+        return msg
 
 
 # ==================== Fetcher 基类 ====================
@@ -501,6 +551,7 @@ class BalancePlugin(Star):
         /余额 当前      - 查询当前会话使用的模型余额
         /余额 所有      - 查询所有已配置模型的余额
         /余额 <平台名>  - 查询指定平台的余额（如 deepseek、硅基、kimi 等）
+        /测试 <API网址> <key> - 测试 OpenAI 兼容端点的模型可用性
         /余额          - 显示帮助信息
     """
 
@@ -734,6 +785,46 @@ class BalancePlugin(Star):
             extra = parts[1].strip() if len(parts) > 1 else ""
             async for msg in self._query_by_platform(event, sub_command, extra):
                 yield msg
+
+    @filter.command("测试")
+    async def test_model(self, event: AstrMessageEvent):
+        """测试 OpenAI 兼容端点的模型是否可用。用法：/测试 <API网址> <API Key>"""
+        # 权限检查
+        if not self._is_admin(event):
+            yield event.plain_result("🚫 只有管理员可以使用此指令。")
+            return
+
+        # 解析参数：指令 + 网址 + API Key
+        full_text = event.message_str.strip()
+        if full_text.startswith("/"):
+            full_text = full_text[1:]
+        if full_text.startswith("测试"):
+            full_text = full_text[len("测试"):].strip()
+        parts = full_text.split(maxsplit=1)
+        raw = parts[0] if parts else ""
+        url = raw.lower()
+
+        if raw == "" or raw in ("帮助", "help"):
+            yield event.plain_result(
+                "ℹ️ **测试模型可用性**\n"
+                "用法：/测试 <API网址> <API Key> [API Key2]... [模型名]\n"
+                "示例：/测试 https://api.example.com/v1 sk-xxxxxxxx\n"
+                "      /测试 https://api.example.com sk-xxxxxxxx deepseek-chat\n"
+                "自动识别 OpenAI 兼容端点：列出可用模型并实测调用，验证 Key 是否有效。\n"
+                "自动模式最多实测前 3 个聊天类模型（遇失败即停）；\n"
+                "末尾可指定模型名，直接实测该模型（不在模型列表中也会硬测）。"
+            )
+            return
+        if not (url.startswith("http://") or url.startswith("https://")):
+            yield event.plain_result(
+                f"❌ 请输入 API 网址，格式：/测试 <API网址> <API Key>\n"
+                f"输入内容: {raw}"
+            )
+            return
+
+        extra = parts[1].strip() if len(parts) > 1 else ""
+        async for msg in self._query_model_test(event, raw, extra):
+            yield msg
 
     async def _query_current(self, event: AstrMessageEvent):
         """查询当前会话使用的模型余额"""
@@ -1145,6 +1236,223 @@ class BalancePlugin(Star):
 
         return BalanceResult("自定义端点", "Unknown", "0", error="无法获取余额信息 (API不支持或返回为空)")
 
+    async def _query_model_test(self, event: AstrMessageEvent, api_base: str, extra_args: str = ""):
+        """测试指定 API 端点的模型可用性（OpenAI 兼容），支持多个 API Key，可选指定模型名"""
+        api_base = api_base.rstrip("/")
+        if "/v1" in api_base:
+            api_base = api_base.split("/v1")[0]
+
+        tokens = extra_args.split()
+        valid_keys = [t for t in tokens if t.startswith("sk-")]
+        non_key_tokens = [t for t in tokens if not t.startswith("sk-")]
+
+        if len(non_key_tokens) > 1:
+            yield event.plain_result(
+                f"❌ 模型名参数过多，只能指定一个（以 sk- 开头的是 API Key）。\n"
+                f"输入内容: {extra_args}"
+            )
+            return
+        model_name = non_key_tokens[0] if non_key_tokens else ""
+
+        if not valid_keys:
+            yield event.plain_result(
+                f"❌ 未检测到有效的 API Key（需要以 sk- 开头）。\n"
+                f"输入内容: {extra_args}"
+            )
+            return
+
+        target_desc = f"，模型 {model_name}" if model_name else ""
+        yield event.plain_result(f"🔄 正在测试 {len(valid_keys)} 个密钥连接 {api_base}{target_desc}，请稍候...")
+        session = await self.manager._get_session()
+        tasks = [self._test_model_openai_compatible(session, key, api_base, model_name) for key in valid_keys]
+        results = await asyncio.gather(*tasks)
+        msg = self._format_model_test_results(f"{api_base} 模型测试", results, valid_keys)
+        yield event.plain_result(msg)
+
+    def _format_model_test_results(self, title: str, results, keys: List[str]) -> str:
+        """将多个模型测试结果格式化为结果字符串（按成功/失败分组）"""
+        success_list = []
+        error_list = []
+        for res, key in zip(results, keys):
+            text = res.to_string(self._mask_key(key))
+            (error_list if res.error else success_list).append(text)
+
+        if len(keys) == 1:
+            msg = self._header(title)
+            msg += self._sep()
+            msg += (success_list[0] if success_list else error_list[0])
+            return msg
+
+        msg = self._header(f"{title} ({len(keys)} 个密钥)")
+        msg += self._sep()
+        if success_list:
+            msg += self._item_sep().join(success_list)
+        if error_list:
+            if success_list:
+                msg += self._section_sep()
+            msg += "**测试失败:**\n"
+            msg += self._item_sep().join(error_list)
+        return msg
+
+    def _pick_chat_models(self, models: List[str], limit: int = 3) -> List[str]:
+        """挑选用于实测的候选模型：过滤明显非聊天类，优先聊天/生成类"""
+        cleaned = [m for m in models if not any(h in m.lower() for h in NON_CHAT_HINTS)]
+        chat_priority = [m for m in cleaned if any(k in m.lower() for k in CHAT_KEY_HINTS)]
+        pool = chat_priority or cleaned or models
+        picked = []
+        seen = set()
+        for m in pool:
+            if m not in seen:
+                seen.add(m)
+                picked.append(m)
+            if len(picked) >= limit:
+                break
+        return picked
+
+    async def _test_model_openai_compatible(self, session: aiohttp.ClientSession, api_key: str, base_url: str,
+                                            model_name: str = "") -> ModelTestResult:
+        """测试 OpenAI 兼容端点：拉取模型列表 + 实测 chat 调用，验证模型可用性。
+        指定 model_name 时直接实测该模型（即使不在模型列表中）；否则自动挑选聊天类模型。"""
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+        }
+        source = base_url
+        specified = bool(model_name)
+
+        # 1. 拉取模型列表（同时验证 Key 有效性；指定模型时列表不可用不阻塞实测）
+        data = None
+        models_latency_ms = 0
+        status = 0
+        try:
+            url = f"{base_url}/v1/models"
+            start = time.perf_counter()
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                models_latency_ms = int((time.perf_counter() - start) * 1000)
+                status = resp.status
+                if status in (401, 403):
+                    err = await self._short_error(resp)
+                    return ModelTestResult(source, False, status_code=status,
+                                           error=f"API Key 无效或无权限 (HTTP {status}){err}")
+                if status != 200 and not specified:
+                    err = await self._short_error(resp)
+                    return ModelTestResult(source, False, status_code=status,
+                                           error=f"获取模型列表失败 (HTTP {status}){err}")
+                try:
+                    data = await resp.json()
+                except Exception:
+                    text = await self._safe_resp_text(resp)
+                    if not specified:
+                        return ModelTestResult(source, False, status_code=status,
+                                               error=f"返回内容非 JSON (HTTP {status}): {text[:200]}")
+        except aiohttp.ClientError as e:
+            return ModelTestResult(source, False, error=f"连接失败: {e}")
+        except Exception as e:
+            return ModelTestResult(source, False, error=f"获取模型列表异常: {e}")
+
+        # 2. 解析模型 ID 列表（兼容 data 列表 / models 列表 / 对象键名）
+        ids = []
+        if isinstance(data, dict):
+            entries = data.get("data") or data.get("models") or []
+            if isinstance(entries, dict):
+                ids = [str(k) for k in entries.keys()]
+            elif isinstance(entries, list):
+                for m in entries:
+                    mid = m.get("id") or m.get("model") if isinstance(m, dict) else None
+                    if not mid and isinstance(m, dict):
+                        mid = next(iter(m.keys()), None)
+                    if mid:
+                        ids.append(str(mid))
+        elif isinstance(data, list):
+            for m in data:
+                if isinstance(m, dict):
+                    mid = m.get("id") or m.get("model") or next(iter(m.keys()), None)
+                else:
+                    mid = str(m)
+                if mid:
+                    ids.append(str(mid))
+        ids = list(dict.fromkeys(ids))  # 去重保序
+
+        # 3. 确定实测目标：指定模型优先，否则自动挑选，列表为空且未指定则报错
+        if specified:
+            candidates = [model_name]
+        elif not ids:
+            return ModelTestResult(source, False, status_code=status,
+                                   error="模型列表为空（该端点可能不是 OpenAI 兼容 API）")
+        else:
+            candidates = self._pick_chat_models(ids)
+
+        # 4. 实测调用
+        tested_ok = []
+        fail_msg = None
+        chat_latency_ms = models_latency_ms
+        for model in candidates:
+            try:
+                url = f"{base_url}/v1/chat/completions"
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                    "stream": False,
+                }
+                start = time.perf_counter()
+                async with session.post(url, json=payload, headers=headers,
+                                        timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    chat_latency_ms = int((time.perf_counter() - start) * 1000)
+                    if resp.status == 200:
+                        tested_ok.append(model)
+                        continue
+                    err = await self._short_error(resp)
+                    fail_msg = f"模型 {model} 调用失败 (HTTP {resp.status}){err}"
+                    break
+            except aiohttp.ClientError as e:
+                fail_msg = f"模型 {model} 请求异常: {e}"
+                break
+            except Exception as e:
+                fail_msg = f"模型 {model} 处理异常: {e}"
+                break
+
+        if not tested_ok and fail_msg:
+            return ModelTestResult(source, False, models=ids, status_code=status,
+                                   latency_ms=chat_latency_ms, error=fail_msg, specified=specified)
+
+        raw_info = ""
+        if specified and ids and model_name not in ids:
+            raw_info = f"ℹ️ 模型 {model_name} 未出现在 /v1/models 列表中，已直接实测"
+        if tested_ok and fail_msg:
+            raw_info = (raw_info + "；" if raw_info else "") + f"⚠️ 另有模型不可用: {fail_msg}"
+        return ModelTestResult(source, True, models=ids, tested_models=tested_ok,
+                               latency_ms=chat_latency_ms, status_code=status,
+                               raw_info=raw_info, specified=specified)
+
+    async def _short_error(self, resp) -> str:
+        """从错误响应中提取简短错误信息，返回形如 ': 具体错误' 的字符串，失败返回空串"""
+        try:
+            data = await resp.json()
+        except Exception:
+            try:
+                text = (await resp.text()).strip()
+            except Exception:
+                return ""
+            return f": {text[:150]}" if text else ""
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                err = err.get("message", "")
+            elif not isinstance(err, str):
+                err = data.get("message", "")
+            if err:
+                return f": {str(err)[:150]}"
+        return ""
+
+    async def _safe_resp_text(self, resp) -> str:
+        """安全读取响应文本（供非 JSON 分支使用）"""
+        try:
+            return await resp.text()
+        except Exception:
+            return ""
+
     def _get_unique_platform_display_names(self) -> List[str]:
         """获取所有支持平台的显示名称列表"""
         return [info["display_name"] for info in self.PLATFORMS.values()]
@@ -1180,6 +1488,7 @@ class BalancePlugin(Star):
             + "  /余额 <平台简写> - 查询指定平台余额（配置中的或自带站点）\n"
             + "  /余额 <平台简写> <key1> [key2]... - 批量查询自带平台的多个密钥余额\n"
             + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（自动识别 OpenAI/New API）\n"
+            + "  /测试 <API网址> <key1> [key2]... [模型名] - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用，可指定模型）\n"
             + "\n"
             + "**支持的平台:**\n"
             + f"  {platforms}\n"

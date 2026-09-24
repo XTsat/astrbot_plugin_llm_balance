@@ -10,6 +10,7 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 - 命令后直接传 API Key 查询（无需在 AstrBot 中配置）
 - 批量查询多个 API Key（自动识别 `sk-` 开头的令牌）
 - 自定义 API 端点余额查询（支持 OpenAI Billing 与 New API 兼容端点）
+- 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用）
 - 可自定义平台别名（用于命令匹配和 Provider 自动识别）
 - 管理员权限控制
 - 完全可自定义的输出模板（成功/失败/标题/分隔符）
@@ -23,8 +24,9 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 /余额 所有                          # 查询所有已配置模型的余额
 /余额 <平台简写>                     # 查询指定 AstrBot 配置平台的余额
 /余额 <平台简写> <key1> [key2]...   # 批量查询指定平台的多个密钥余额
-/余额 <API端口> <key1> [key2]...    # 查询自定义 API 端点的余额（自动识别 OpenAI/New API）
+/余额 <API端口> <key1> [key2]...   # 查询自定义 API 端点的余额（自动识别 OpenAI/New API）
 /余额 <JSON配置>                    # 直接粘贴 NewAPI 复制连接信息查询余额
+/测试 <API网址> <key1> [key2]... # 测试 OpenAI 兼容端点的模型可用性
 ```
 
 ## 支持的平台
@@ -118,6 +120,37 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 2. **降级**尝试 New API 格式（`/api/usage/token`）
 
 适用于 one-api、new-api、AIProxy 等各类中转站。
+
+## 测试模型可用性
+
+使用 `/测试` 命令测试任意 OpenAI 兼容端点的模型是否可用。命令格式与自定义端点余额查询一致：`指令 + 网址 + API Key`，末尾可**指定模型名**。
+
+```
+/测试 https://api.example.com/v1 sk-xxxx
+/测试 https://api.example.com sk-xxxx1 sk-xxxx2
+/测试 https://api.example.com sk-xxxx deepseek-chat
+/测试 https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
+```
+
+测试流程：
+1. 请求 `/v1/models` 拉取可用模型列表（同时验证 API Key 是否有效）
+2. **未指定模型名**：自动挑选聊天/生成类模型，**最多实测前 3 个**（遇失败即停），实测调用 `/v1/chat/completions`（`max_tokens=1`）
+3. **指定模型名**（最后一个非 `sk-` 参数）：直接实测该模型；即使它不在模型列表中、甚至 `/v1/models` 接口不可用也会硬测
+4. 返回连接状态、响应延迟、可用模型列表和实测结果
+
+输出示例：
+
+```
+💰 **https://api.example.com 模型测试**
+════════════════════════════════════════
+🟢 **https://api.example.com**
+  🔑 密钥: sk-abc***
+  ✅ 连接成功 · 响应 350ms (HTTP 200)
+  🧠 可用模型 3: deepseek-chat、deepseek-reasoner、deepseek-coder
+  🎯 测试模型: deepseek-chat ✅ 可用
+```
+
+支持多个密钥并发测试，结果按成功/失败分组展示。
 
 ## 批量查询
 
