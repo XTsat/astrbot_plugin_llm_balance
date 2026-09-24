@@ -5,6 +5,14 @@
     "hint": "开启后只有管理员可以使用余额查询指令，建议在群聊中开启以保护API密钥隐私",
     "default": false
   },
+  "output_language": {
+    "description": "输出语言",
+    "type": "string",
+    "options": ["auto", "zh", "en"],
+    "labels": ["自动（按指令语言）", "中文", "英文"],
+    "hint": "auto：按指令语言自动切换（中文指令输出中文，英文指令输出英文）；zh：强制中文；en：强制英文",
+    "default": "auto"
+  },
   "newapi_base_url": {
     "description": "NEW API 基地址",
     "type": "text",

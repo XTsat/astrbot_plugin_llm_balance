@@ -1,6 +1,9 @@
-# astrbot_plugin_llm_balance
-
-AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moonshot、OpenAI、ChatAnywhere、NEW API 等平台。
+<div align="center">
+<h1>大模型余额查询</h1>
+<p><strong>查询各大模型平台余额，支持批量查询多个令牌，支持查询 Astrbot 内置的端点、传递平台或传递 API 端点、自定义的 NewAPI 站点；支持测试 OpenAI 兼容端点的模型可用性</strong></p>
+<p><sub>余额查询 &nbsp;&nbsp; 多平台 &nbsp;&nbsp; 模型测试</sub></p>
+<p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
+</div>
 
 ## 功能
 
@@ -29,6 +32,8 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 /测试 <API网址> <key1> [key2]... # 测试 OpenAI 兼容端点的模型可用性
 ```
 
+英文别名：`/余额` = `/balance`，`/测试` = `/test`；子命令：当前 = current，所有 = all，帮助 = help。
+
 ## 支持的平台
 
 | 平台 | 别名 |
@@ -49,6 +54,7 @@ AstrBot 多平台 LLM 余额查询插件。支持 DeepSeek、硅基流动、Moon
 | 配置 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `admin_only` | bool | `false` | 仅管理员可用 |
+| `output_language` | string | `auto` | 输出语言：`auto`（按指令语言自动切换）/ `zh`（强制中文）/ `en`（强制英文） |
 | `newapi_base_url` | text | 空 | NEW API 中转站地址，每行一个 |
 | `request_timeout` | float | `10.0` | 请求超时（秒） |
 | `show_unsupported` | bool | `true` | `/余额 所有` 中显示未适配平台 |

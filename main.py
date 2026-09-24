@@ -133,24 +133,33 @@ class ModelTestResult:
     error: str = None
     specified: bool = False
 
-    def to_string(self, api_key: str = "") -> str:
+    def to_string(self, api_key: str = "", lang: str = "zh") -> str:
         indent = "  "
+        en = lang != "zh"
         head_icon = "🟢" if not self.error else "🔴"
+        key_label = "Key" if en else "密钥"
         msg = f"{head_icon} **{self.source_name}**\n"
         if api_key:
-            msg += f"{indent}🔑 密钥: {api_key}\n"
+            msg += f"{indent}🔑 {key_label}: {api_key}\n"
         if self.error:
             msg += f"{indent}❌ {self.error}"
             return msg
-        msg += f"{indent}✅ 连接成功 · 响应 {self.latency_ms}ms (HTTP {self.status_code})\n"
+        ok_line = ("✅ Connected · Response {}ms (HTTP {})" if en
+                   else "✅ 连接成功 · 响应 {}ms (HTTP {})")
+        msg += f"{indent}{ok_line.format(self.latency_ms, self.status_code)}\n"
         if self.models:
             shown = "、".join(self.models[:8])
             if len(self.models) > 8:
-                shown += f" 等 {len(self.models)} 个"
-            msg += f"{indent}🧠 可用模型 {len(self.models)}: {shown}\n"
+                shown += (" ... and {} more".format(len(self.models)) if en
+                          else " 等 {} 个".format(len(self.models)))
+            label = "Available models" if en else "可用模型"
+            msg += f"{indent}🧠 {label} {len(self.models)}: {shown}\n"
         if self.tested_models:
-            label = "指定模型" if self.specified else "测试模型"
-            msg += f"{indent}🎯 {label}: " + " / ".join(self.tested_models) + " ✅ 可用"
+            label = ("Specified model" if (en and self.specified)
+                     else "Tested model" if en
+                     else "指定模型" if self.specified else "测试模型")
+            suffix = " ✅ available" if en else " ✅ 可用"
+            msg += f"{indent}🎯 {label}: " + " / ".join(self.tested_models) + suffix
         if self.raw_info:
             msg += f"\n{indent}📝 {self.raw_info}"
         return msg
@@ -747,7 +756,7 @@ class BalancePlugin(Star):
             provider_id = provider_id.split("/")[0]
         return provider_id or provider_type
 
-    @filter.command("余额")
+    @filter.command("余额", alias={"balance"})
     async def balance(self, event: AstrMessageEvent):
         """查询大模型平台余额。输入 /余额 查看完整帮助。"""
         # 权限检查
@@ -759,18 +768,20 @@ class BalancePlugin(Star):
         full_text = event.message_str.strip()
         if full_text.startswith("/"):
             full_text = full_text[1:]
-        if full_text.startswith("余额"):
-            full_text = full_text[len("余额"):].strip()
+        for cmd in ("余额", "balance"):
+            if full_text.startswith(cmd):
+                full_text = full_text[len(cmd):].strip()
+                break
         parts = full_text.split(maxsplit=1)
         raw_sub = parts[0] if parts else ""
         sub_command = raw_sub.lower()
 
         if sub_command == "" or sub_command == "帮助" or sub_command == "help":
             yield event.plain_result(self._get_help_text())
-        elif sub_command == "当前":
+        elif sub_command == "当前" or sub_command == "current":
             async for msg in self._query_current(event):
                 yield msg
-        elif sub_command == "所有":
+        elif sub_command == "所有" or sub_command == "all":
             async for msg in self._query_all(event):
                 yield msg
         elif sub_command.startswith("http://") or sub_command.startswith("https://"):
@@ -786,7 +797,21 @@ class BalancePlugin(Star):
             async for msg in self._query_by_platform(event, sub_command, extra):
                 yield msg
 
-    @filter.command("测试")
+    def _get_output_lang(self, event: AstrMessageEvent) -> str:
+        """决定输出语言：配置 output_language（auto/zh/en）优先，auto 时按指令语言推断"""
+        cfg = (self.config.get("output_language") or "auto").lower()
+        if cfg in ("zh", "en"):
+            return cfg
+        text = (event.message_str or "").strip()
+        if text.startswith("/"):
+            text = text[1:]
+        if text.startswith("余额") or text.startswith("测试"):
+            return "zh"
+        if text.startswith("balance") or text.startswith("test"):
+            return "en"
+        return "zh"
+
+    @filter.command("测试", alias={"test"})
     async def test_model(self, event: AstrMessageEvent):
         """测试 OpenAI 兼容端点的模型是否可用。用法：/测试 <API网址> <API Key>"""
         # 权限检查
@@ -794,36 +819,59 @@ class BalancePlugin(Star):
             yield event.plain_result("🚫 只有管理员可以使用此指令。")
             return
 
+        lang = self._get_output_lang(event)
         # 解析参数：指令 + 网址 + API Key
         full_text = event.message_str.strip()
         if full_text.startswith("/"):
             full_text = full_text[1:]
-        if full_text.startswith("测试"):
-            full_text = full_text[len("测试"):].strip()
+        for cmd in ("测试", "test"):
+            if full_text.startswith(cmd):
+                full_text = full_text[len(cmd):].strip()
+                break
         parts = full_text.split(maxsplit=1)
         raw = parts[0] if parts else ""
         url = raw.lower()
 
         if raw == "" or raw in ("帮助", "help"):
-            yield event.plain_result(
-                "ℹ️ **测试模型可用性**\n"
-                "用法：/测试 <API网址> <API Key> [API Key2]... [模型名]\n"
-                "示例：/测试 https://api.example.com/v1 sk-xxxxxxxx\n"
-                "      /测试 https://api.example.com sk-xxxxxxxx deepseek-chat\n"
-                "自动识别 OpenAI 兼容端点：列出可用模型并实测调用，验证 Key 是否有效。\n"
-                "自动模式最多实测前 3 个聊天类模型（遇失败即停）；\n"
-                "末尾可指定模型名，直接实测该模型（不在模型列表中也会硬测）。"
-            )
+            if lang == "en":
+                usage = (
+                    "ℹ️ **Test Model Availability**\n"
+                    "Usage: /test <API endpoint> <API Key> [Key2]... [Model name]\n"
+                    "Examples: /test https://api.example.com/v1 sk-xxxxxxxx\n"
+                    "          /test https://api.example.com sk-xxxxxxxx deepseek-chat\n"
+                    "Auto-detects OpenAI-compatible endpoints: lists models and runs chat calls to verify the key.\n"
+                    "Auto mode tests up to 3 chat models (stops on first failure);\n"
+                    "An optional trailing model name tests that model directly (hard-tested even if not in the model list).\n"
+                    "Chinese alias: /测试"
+                )
+            else:
+                usage = (
+                    "ℹ️ **测试模型可用性**\n"
+                    "用法：/测试 <API网址> <API Key> [API Key2]... [模型名]\n"
+                    "示例：/测试 https://api.example.com/v1 sk-xxxxxxxx\n"
+                    "      /测试 https://api.example.com sk-xxxxxxxx deepseek-chat\n"
+                    "自动识别 OpenAI 兼容端点：列出可用模型并实测调用，验证 Key 是否有效。\n"
+                    "自动模式最多实测前 3 个聊天类模型（遇失败即停）；\n"
+                    "末尾可指定模型名，直接实测该模型（不在模型列表中也会硬测）。\n"
+                    "英文别名：/test"
+                )
+            yield event.plain_result(usage)
             return
         if not (url.startswith("http://") or url.startswith("https://")):
-            yield event.plain_result(
-                f"❌ 请输入 API 网址，格式：/测试 <API网址> <API Key>\n"
-                f"输入内容: {raw}"
-            )
+            if lang == "en":
+                yield event.plain_result(
+                    f"❌ Please enter an API endpoint, format: /test <API endpoint> <API Key>\n"
+                    f"Input: {raw}"
+                )
+            else:
+                yield event.plain_result(
+                    f"❌ 请输入 API 网址，格式：/测试 <API网址> <API Key>\n"
+                    f"输入内容: {raw}"
+                )
             return
 
         extra = parts[1].strip() if len(parts) > 1 else ""
-        async for msg in self._query_model_test(event, raw, extra):
+        async for msg in self._query_model_test(event, raw, extra, lang):
             yield msg
 
     async def _query_current(self, event: AstrMessageEvent):
@@ -843,7 +891,7 @@ class BalancePlugin(Star):
             yield event.plain_result(f"❌ 无法获取 {display_name} 的 API Key。")
             return
 
-        logger.info(f"查询当前余额 - 平台: {display_name}, Base: {api_base}, Key: {self._mask_key(api_key)}")
+        logger.info(f"[astrbot_plugin_llm_balance] 查询当前余额 - 平台: {display_name}, Base: {api_base}, Key: {self._mask_key(api_key)}")
 
         yield event.plain_result(f"🔄 正在查询 {display_name} 的余额，请稍候...")
 
@@ -863,12 +911,12 @@ class BalancePlugin(Star):
             yield event.plain_result("⚠️ 当前未配置任何模型提供商。")
             return
 
-        logger.info(f"_query_all: 获取到 {len(providers)} 个 provider")
+        logger.info(f"[astrbot_plugin_llm_balance] _query_all: 获取到 {len(providers)} 个 provider")
         for i, p in enumerate(providers):
             cfg = p.provider_config
             # 打印所有配置字段，方便确认 api_base 对应哪个字段
             cfg_keys = {k: (self._mask_key(v) if isinstance(v, str) and ('key' in k.lower() or 'secret' in k.lower() or 'token' in k.lower()) else v) for k, v in cfg.items()}
-            logger.info(f"  provider[{i}]: {cfg_keys}")
+            logger.info(f"[astrbot_plugin_llm_balance]   provider[{i}]: {cfg_keys}")
 
         # 按 (api_base, api_key) 去重，遍历每个 provider 的所有 key
         unique_credentials = {}  # (api_base, api_key) -> provider
@@ -883,7 +931,7 @@ class BalancePlugin(Star):
                     continue
                 unique_credentials[(api_base, api_key)] = p
 
-        logger.info(f"_query_all: 展开所有 key 后共 {len(unique_credentials)} 个唯一凭证")
+        logger.info(f"[astrbot_plugin_llm_balance] _query_all: 展开所有 key 后共 {len(unique_credentials)} 个唯一凭证")
 
         if not unique_credentials:
             yield event.plain_result("⚠️ 未找到有效的 API Key 配置。")
@@ -994,16 +1042,16 @@ class BalancePlugin(Star):
 
         # 3. 没有自定义 API Key，从已配置的 provider 中查找
         providers = self.context.get_all_providers()
-        logger.info(f"_query_by_platform [{platform_name}]: 共 {len(providers)} 个 provider, 平台key={platform_key}")
+        logger.info(f"[astrbot_plugin_llm_balance] _query_by_platform [{platform_name}]: 共 {len(providers)} 个 provider, 平台key={platform_key}")
         matched_providers = []
         for p in providers:
             api_base = p.provider_config.get("api_base", "")
             matched_key = self._match_platform_by_api_base(api_base)
-            logger.info(f"  provider id={p.provider_config.get('id')}, api_base={api_base}, matched_key={matched_key}, key_count={len(self._get_all_api_keys(p))}")
+            logger.info(f"[astrbot_plugin_llm_balance]   provider id={p.provider_config.get('id')}, api_base={api_base}, matched_key={matched_key}, key_count={len(self._get_all_api_keys(p))}")
             if matched_key == platform_key:
                 matched_providers.append(p)
 
-        logger.info(f"_query_by_platform [{platform_name}]: 匹配到 {len(matched_providers)} 个 provider")
+        logger.info(f"[astrbot_plugin_llm_balance] _query_by_platform [{platform_name}]: 匹配到 {len(matched_providers)} 个 provider")
 
         # 4. NEW API 特殊处理：没有匹配到 provider 但配置了 newapi_urls
         if not matched_providers and platform_key == "newapi":
@@ -1082,7 +1130,7 @@ class BalancePlugin(Star):
                 seen_keys.add(key)
                 deduped_entries.append((base, key))
 
-        logger.info(f"_query_by_platform [{platform_name}]: 展开后 {len(all_entries)} 个 key, 去重后 {len(deduped_entries)} 个")
+        logger.info(f"[astrbot_plugin_llm_balance] _query_by_platform [{platform_name}]: 展开后 {len(all_entries)} 个 key, 去重后 {len(deduped_entries)} 个")
         yield event.plain_result(f"🔄 匹配到 {len(deduped_entries)} 个 {display_name} 密钥，正在并发查询...")
 
         # 并发查询所有 key
@@ -1236,8 +1284,9 @@ class BalancePlugin(Star):
 
         return BalanceResult("自定义端点", "Unknown", "0", error="无法获取余额信息 (API不支持或返回为空)")
 
-    async def _query_model_test(self, event: AstrMessageEvent, api_base: str, extra_args: str = ""):
+    async def _query_model_test(self, event: AstrMessageEvent, api_base: str, extra_args: str = "", lang: str = "zh"):
         """测试指定 API 端点的模型可用性（OpenAI 兼容），支持多个 API Key，可选指定模型名"""
+        en = lang != "zh"
         api_base = api_base.rstrip("/")
         if "/v1" in api_base:
             api_base = api_base.split("/v1")[0]
@@ -1247,34 +1296,51 @@ class BalancePlugin(Star):
         non_key_tokens = [t for t in tokens if not t.startswith("sk-")]
 
         if len(non_key_tokens) > 1:
-            yield event.plain_result(
-                f"❌ 模型名参数过多，只能指定一个（以 sk- 开头的是 API Key）。\n"
-                f"输入内容: {extra_args}"
-            )
+            if en:
+                yield event.plain_result(
+                    f"❌ Too many model name arguments, only one allowed (tokens starting with sk- are API keys).\n"
+                    f"Input: {extra_args}"
+                )
+            else:
+                yield event.plain_result(
+                    f"❌ 模型名参数过多，只能指定一个（以 sk- 开头的是 API Key）。\n"
+                    f"输入内容: {extra_args}"
+                )
             return
         model_name = non_key_tokens[0] if non_key_tokens else ""
 
         if not valid_keys:
-            yield event.plain_result(
-                f"❌ 未检测到有效的 API Key（需要以 sk- 开头）。\n"
-                f"输入内容: {extra_args}"
-            )
+            if en:
+                yield event.plain_result(
+                    f"❌ No valid API key detected (must start with sk-).\n"
+                    f"Input: {extra_args}"
+                )
+            else:
+                yield event.plain_result(
+                    f"❌ 未检测到有效的 API Key（需要以 sk- 开头）。\n"
+                    f"输入内容: {extra_args}"
+                )
             return
 
-        target_desc = f"，模型 {model_name}" if model_name else ""
-        yield event.plain_result(f"🔄 正在测试 {len(valid_keys)} 个密钥连接 {api_base}{target_desc}，请稍候...")
+        target_desc = f", model {model_name}" if model_name else ""
+        if en:
+            yield event.plain_result(f"🔄 Testing {len(valid_keys)} key(s) against {api_base}{target_desc}, please wait...")
+        else:
+            yield event.plain_result(f"🔄 正在测试 {len(valid_keys)} 个密钥连接 {api_base}{target_desc}，请稍候...")
         session = await self.manager._get_session()
-        tasks = [self._test_model_openai_compatible(session, key, api_base, model_name) for key in valid_keys]
+        tasks = [self._test_model_openai_compatible(session, key, api_base, model_name, lang) for key in valid_keys]
         results = await asyncio.gather(*tasks)
-        msg = self._format_model_test_results(f"{api_base} 模型测试", results, valid_keys)
+        title = f"Model Test: {api_base}" if en else f"{api_base} 模型测试"
+        msg = self._format_model_test_results(title, results, valid_keys, lang)
         yield event.plain_result(msg)
 
-    def _format_model_test_results(self, title: str, results, keys: List[str]) -> str:
+    def _format_model_test_results(self, title: str, results, keys: List[str], lang: str = "zh") -> str:
         """将多个模型测试结果格式化为结果字符串（按成功/失败分组）"""
+        en = lang != "zh"
         success_list = []
         error_list = []
         for res, key in zip(results, keys):
-            text = res.to_string(self._mask_key(key))
+            text = res.to_string(self._mask_key(key), lang)
             (error_list if res.error else success_list).append(text)
 
         if len(keys) == 1:
@@ -1283,14 +1349,17 @@ class BalancePlugin(Star):
             msg += (success_list[0] if success_list else error_list[0])
             return msg
 
-        msg = self._header(f"{title} ({len(keys)} 个密钥)")
+        if en:
+            msg = self._header(f"{title} ({len(keys)} key(s))")
+        else:
+            msg = self._header(f"{title} ({len(keys)} 个密钥)")
         msg += self._sep()
         if success_list:
             msg += self._item_sep().join(success_list)
         if error_list:
             if success_list:
                 msg += self._section_sep()
-            msg += "**测试失败:**\n"
+            msg += "**Failed tests:**\n" if en else "**测试失败:**\n"
             msg += self._item_sep().join(error_list)
         return msg
 
@@ -1310,9 +1379,10 @@ class BalancePlugin(Star):
         return picked
 
     async def _test_model_openai_compatible(self, session: aiohttp.ClientSession, api_key: str, base_url: str,
-                                            model_name: str = "") -> ModelTestResult:
+                                            model_name: str = "", lang: str = "zh") -> ModelTestResult:
         """测试 OpenAI 兼容端点：拉取模型列表 + 实测 chat 调用，验证模型可用性。
         指定 model_name 时直接实测该模型（即使不在模型列表中）；否则自动挑选聊天类模型。"""
+        en = lang != "zh"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -1333,10 +1403,16 @@ class BalancePlugin(Star):
                 status = resp.status
                 if status in (401, 403):
                     err = await self._short_error(resp)
+                    if en:
+                        return ModelTestResult(source, False, status_code=status,
+                                               error=f"Invalid or unauthorized API key (HTTP {status}){err}")
                     return ModelTestResult(source, False, status_code=status,
                                            error=f"API Key 无效或无权限 (HTTP {status}){err}")
                 if status != 200 and not specified:
                     err = await self._short_error(resp)
+                    if en:
+                        return ModelTestResult(source, False, status_code=status,
+                                               error=f"Failed to fetch model list (HTTP {status}){err}")
                     return ModelTestResult(source, False, status_code=status,
                                            error=f"获取模型列表失败 (HTTP {status}){err}")
                 try:
@@ -1344,11 +1420,18 @@ class BalancePlugin(Star):
                 except Exception:
                     text = await self._safe_resp_text(resp)
                     if not specified:
+                        if en:
+                            return ModelTestResult(source, False, status_code=status,
+                                                   error=f"Non-JSON response (HTTP {status}): {text[:200]}")
                         return ModelTestResult(source, False, status_code=status,
                                                error=f"返回内容非 JSON (HTTP {status}): {text[:200]}")
         except aiohttp.ClientError as e:
+            if en:
+                return ModelTestResult(source, False, error=f"Connection failed: {e}")
             return ModelTestResult(source, False, error=f"连接失败: {e}")
         except Exception as e:
+            if en:
+                return ModelTestResult(source, False, error=f"Exception fetching model list: {e}")
             return ModelTestResult(source, False, error=f"获取模型列表异常: {e}")
 
         # 2. 解析模型 ID 列表（兼容 data 列表 / models 列表 / 对象键名）
@@ -1378,6 +1461,9 @@ class BalancePlugin(Star):
         if specified:
             candidates = [model_name]
         elif not ids:
+            if en:
+                return ModelTestResult(source, False, status_code=status,
+                                       error="Empty model list (this endpoint may not be OpenAI-compatible)")
             return ModelTestResult(source, False, status_code=status,
                                    error="模型列表为空（该端点可能不是 OpenAI 兼容 API）")
         else:
@@ -1404,13 +1490,16 @@ class BalancePlugin(Star):
                         tested_ok.append(model)
                         continue
                     err = await self._short_error(resp)
-                    fail_msg = f"模型 {model} 调用失败 (HTTP {resp.status}){err}"
+                    if en:
+                        fail_msg = f"Model {model} call failed (HTTP {resp.status}){err}"
+                    else:
+                        fail_msg = f"模型 {model} 调用失败 (HTTP {resp.status}){err}"
                     break
             except aiohttp.ClientError as e:
-                fail_msg = f"模型 {model} 请求异常: {e}"
+                fail_msg = f"Model {model} request error: {e}" if en else f"模型 {model} 请求异常: {e}"
                 break
             except Exception as e:
-                fail_msg = f"模型 {model} 处理异常: {e}"
+                fail_msg = f"Model {model} processing error: {e}" if en else f"模型 {model} 处理异常: {e}"
                 break
 
         if not tested_ok and fail_msg:
@@ -1419,9 +1508,16 @@ class BalancePlugin(Star):
 
         raw_info = ""
         if specified and ids and model_name not in ids:
-            raw_info = f"ℹ️ 模型 {model_name} 未出现在 /v1/models 列表中，已直接实测"
+            if en:
+                raw_info = f"ℹ️ Model {model_name} not in /v1/models list, tested directly"
+            else:
+                raw_info = f"ℹ️ 模型 {model_name} 未出现在 /v1/models 列表中，已直接实测"
         if tested_ok and fail_msg:
-            raw_info = (raw_info + "；" if raw_info else "") + f"⚠️ 另有模型不可用: {fail_msg}"
+            if en:
+                raw_info = (raw_info + "; " if raw_info else "") + f"⚠️ Other model unavailable: {fail_msg}"
+            else:
+                raw_info = (raw_info + "；" if raw_info else "") + f"⚠️ 另有模型不可用: {fail_msg}"
+
         return ModelTestResult(source, True, models=ids, tested_models=tested_ok,
                                latency_ms=chat_latency_ms, status_code=status,
                                raw_info=raw_info, specified=specified)
@@ -1489,6 +1585,8 @@ class BalancePlugin(Star):
             + "  /余额 <平台简写> <key1> [key2]... - 批量查询自带平台的多个密钥余额\n"
             + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（自动识别 OpenAI/New API）\n"
             + "  /测试 <API网址> <key1> [key2]... [模型名] - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用，可指定模型）\n"
+            + "  英文别名：/余额 = /balance，/测试 = /test\n"
+            + "  子命令英文别名：当前 = current，所有 = all，帮助 = help\n"
             + "\n"
             + "**支持的平台:**\n"
             + f"  {platforms}\n"
