@@ -109,5 +109,11 @@
         "default": "newapi,中转,new"
       }
     }
+  },
+  "platform_names": {
+    "description": "API 连接缩写映射",
+    "type": "list",
+    "hint": "把 API 连接地址替换为自定义缩写显示，也可作为 /余额、/测试 命令的网址参数使用（如发 /余额 ds 即自动匹配 https://api.deepseek.com）。每项格式：API连接地址=缩写1,缩写2（一个连接可配多个缩写，英文逗号分隔，如 https://api.deepseek.com=ds,DS）。未命中的连接保持原样显示。可添加、修改或删除任意条目。",
+    "default": []
   }
 }

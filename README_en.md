@@ -59,6 +59,7 @@ Aliases can be customized in the plugin config.
 | `request_timeout` | float | `10.0` | Request timeout (seconds) |
 | `show_unsupported` | bool | `true` | Show unsupported platforms in `/balance all` |
 | `platform_aliases` | object | — | Per-platform aliases, comma-separated |
+| `platform_names` | list | — | API endpoint abbreviation map: each item `endpoint=abbr1,abbr2` (one endpoint may have multiple comma-separated abbreviations, multiple rows allowed); shown endpoints are replaced by the first abbreviation, and `/balance` `/test` accept any abbreviation as the endpoint argument |
 
 ### Output Templates
 

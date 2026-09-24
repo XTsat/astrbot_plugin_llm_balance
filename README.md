@@ -59,6 +59,7 @@
 | `request_timeout` | float | `10.0` | 请求超时（秒） |
 | `show_unsupported` | bool | `true` | `/余额 所有` 中显示未适配平台 |
 | `platform_aliases` | object | — | 各平台别名，逗号分隔 |
+| `platform_names` | list | — | API 连接缩写映射：每项 `API连接地址=缩写1,缩写2`（一个连接可配多个缩写，逗号分隔，可添加多行）；输出中的连接地址自动替换为第一个缩写，`/余额` 与 `/测试` 的网址参数可用任一缩写代替 |
 
 ### 输出模板
 

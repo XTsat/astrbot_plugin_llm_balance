@@ -1,7 +1,7 @@
 name: astrbot_plugin_llm_balance
 display_name: 大模型余额查询
 desc: 查询各大模型平台余额，支持批量查询多个令牌，支持查询 Astrbot 内置的端点、传递平台或传递 API 端点、自定义的 NewAPI 站点；支持测试 OpenAI 兼容端点的模型可用性
-version: v1.4.1
+version: v1.4.2
 author: XTsat
 repo: https://github.com/XTsat/astrbot_plugin_llm_balance
 tags:

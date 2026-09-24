@@ -681,8 +681,59 @@ class BalancePlugin(Star):
         template = self._get_template("header_template")
         return template.replace("{{title}}", title)
 
+    @staticmethod
+    def _norm_base(url: str) -> str:
+        """规范化 API 连接地址：去首尾空白、尾斜杠与 /v1 后缀，用于缩写映射匹配"""
+        u = url.strip().rstrip("/")
+        if "/v1" in u:
+            u = u.split("/v1")[0].rstrip("/")
+        return u
+
+    def _build_platform_name_maps(self) -> tuple[dict, dict]:
+        """解析 platform_names（list 每项 `连接=缩写1,缩写2`，兼容 dict 嵌套结构），返回 (连接→显示缩写, 缩写→连接) 两映射；同连接多缩写时显示取第一个，缩写冲突先到者优先"""
+        display: dict = {}
+        abbr: dict = {}
+
+        def add(base: str, val: str) -> None:
+            if not base or not val:
+                return
+            abbrs = [a.strip() for a in val.split(",") if a.strip()]
+            if not abbrs:
+                return
+            display.setdefault(base, abbrs[0])
+            for a in abbrs:
+                abbr.setdefault(a, base)
+
+        raw = self.config.get("platform_names") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                val = v if isinstance(v, str) else (v.get("default") if isinstance(v, dict) else None)
+                if isinstance(val, str) and val.strip():
+                    add(self._norm_base(str(k)), val)
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and "=" in item:
+                    k, v = item.split("=", 1)
+                    add(self._norm_base(k.strip()), v.strip())
+        return display, abbr
+
+    def _apply_platform_name_map(self, name: str) -> str:
+        """应用 platform_names 连接→缩写显示映射：命中返回缩写（多缩写取第一个），未命中保持原样"""
+        if getattr(self, "_platform_name_map", None) is None:
+            self._platform_name_map, self._endpoint_abbr_map = self._build_platform_name_maps()
+        return self._platform_name_map.get(self._norm_base(name), name)
+
+    def _resolve_endpoint_abbr(self, token: str) -> Optional[str]:
+        """按 platform_names 缩写反向解析 API 连接地址（缩写→规范化连接）；未命中返回 None"""
+        if not token:
+            return None
+        if getattr(self, "_endpoint_abbr_map", None) is None:
+            self._platform_name_map, self._endpoint_abbr_map = self._build_platform_name_maps()
+        return self._endpoint_abbr_map.get(token)
+
     def _format_result(self, res: "BalanceResult", masked_key: str = "") -> str:
-        """根据模板格式化余额结果"""
+        """根据模板格式化余额结果（source_name 经平台名称映射）"""
+        res.source_name = self._apply_platform_name_map(res.source_name)
         success_tpl = self._get_template("success_template")
         error_tpl = self._get_template("error_template")
         return res.to_string(success_tpl, error_tpl, api_key=masked_key)
@@ -794,8 +845,13 @@ class BalancePlugin(Star):
                 yield msg
         else:
             extra = parts[1].strip() if len(parts) > 1 else ""
-            async for msg in self._query_by_platform(event, sub_command, extra):
-                yield msg
+            resolved = self._resolve_endpoint_abbr(raw_sub) or self._resolve_endpoint_abbr(sub_command)
+            if resolved:
+                async for msg in self._query_custom(event, resolved, extra):
+                    yield msg
+            else:
+                async for msg in self._query_by_platform(event, sub_command, extra):
+                    yield msg
 
     def _get_output_lang(self, event: AstrMessageEvent) -> str:
         """决定输出语言：配置 output_language（auto/zh/en）优先，auto 时按指令语言推断"""
@@ -858,17 +914,21 @@ class BalancePlugin(Star):
             yield event.plain_result(usage)
             return
         if not (url.startswith("http://") or url.startswith("https://")):
-            if lang == "en":
+            resolved = self._resolve_endpoint_abbr(raw) or self._resolve_endpoint_abbr(url)
+            if resolved:
+                raw = url = resolved
+            elif lang == "en":
                 yield event.plain_result(
                     f"❌ Please enter an API endpoint, format: /test <API endpoint> <API Key>\n"
                     f"Input: {raw}"
                 )
+                return
             else:
                 yield event.plain_result(
                     f"❌ 请输入 API 网址，格式：/测试 <API网址> <API Key>\n"
                     f"输入内容: {raw}"
                 )
-            return
+                return
 
         extra = parts[1].strip() if len(parts) > 1 else ""
         async for msg in self._query_model_test(event, raw, extra, lang):
@@ -1240,7 +1300,7 @@ class BalancePlugin(Star):
                     total_balance=f"{account_balance:.2f}",
                     remaining_balance=f"{remaining:.2f}",
                     used_balance=f"{used_balance:.2f}",
-                    raw_info=f"{base_url} | 支付: {'是' if has_payment else '否'} | 到期: {access_until}"
+                    raw_info=f"{self._apply_platform_name_map(base_url)} | 支付: {'是' if has_payment else '否'} | 到期: {access_until}"
                 )
         except Exception:
             pass
@@ -1272,7 +1332,7 @@ class BalancePlugin(Star):
                     total_balance=str(total_granted),
                     used_balance=str(total_used),
                     remaining_balance=str(total_available),
-                    raw_info=f"{base_url} | 无限额度: {'是' if unlimited else '否'} | 到期: {expires_str}"
+                    raw_info=f"{self._apply_platform_name_map(base_url)} | 无限额度: {'是' if unlimited else '否'} | 到期: {expires_str}"
                 )
 
             err = data.get("message", "未知错误") if isinstance(data, dict) else str(data)[:200]
@@ -1324,13 +1384,14 @@ class BalancePlugin(Star):
 
         target_desc = f", model {model_name}" if model_name else ""
         if en:
-            yield event.plain_result(f"🔄 Testing {len(valid_keys)} key(s) against {api_base}{target_desc}, please wait...")
+            yield event.plain_result(f"🔄 Testing {len(valid_keys)} key(s) against {self._apply_platform_name_map(api_base)}{target_desc}, please wait...")
         else:
-            yield event.plain_result(f"🔄 正在测试 {len(valid_keys)} 个密钥连接 {api_base}{target_desc}，请稍候...")
+            yield event.plain_result(f"🔄 正在测试 {len(valid_keys)} 个密钥连接 {self._apply_platform_name_map(api_base)}{target_desc}，请稍候...")
         session = await self.manager._get_session()
         tasks = [self._test_model_openai_compatible(session, key, api_base, model_name, lang) for key in valid_keys]
         results = await asyncio.gather(*tasks)
-        title = f"Model Test: {api_base}" if en else f"{api_base} 模型测试"
+        shown_base = self._apply_platform_name_map(api_base)
+        title = f"Model Test: {shown_base}" if en else f"{shown_base} 模型测试"
         msg = self._format_model_test_results(title, results, valid_keys, lang)
         yield event.plain_result(msg)
 
