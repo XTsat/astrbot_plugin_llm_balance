@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -91,7 +92,6 @@ class BalanceResult:
             "{{raw_info}}": self.raw_info,
         }
         # 处理 {{?变量}} 条件行：值为空或"0"时移除整行
-        import re
         for key, value in replacements.items():
             cond_key = key.replace("{{", "{{?")
             if cond_key in template:
@@ -117,6 +117,28 @@ NON_CHAT_HINTS = (
 CHAT_KEY_HINTS = (
     "chat", "gpt", "deepseek", "qwen", "kimi", "glm", "moonshot", "claude",
     "llama", "gemini", "mistral", "yi-", "ernie", "doubao", "hunyuan",
+)
+
+# 密钥识别：不少自建网关与小众平台签发的 Key 不带 sk- 前缀（UUID、AIza、id.secret、纯随机串等），
+# 因此不再按前缀硬匹配，而是按「字符集 + 长度」识别（/测试 另加字母数字混排与模型族排除），并用 key:/model: 前缀兜底歧义。
+KEY_PREFIXES = ("sk-", "sk_", "pk-", "rk-", "AKID", "AIza", "eyJ")
+# 显式前缀：命中后前缀部分不参与识别，值按原样使用（含特殊字符、过短或与模型名混淆时兜底）
+KEY_ARG_PREFIXES = ("key:", "密钥:")
+MODEL_ARG_PREFIXES = ("model:", "模型:")
+# 密钥字符集：不含空白的可见 ASCII；URL、中文等不参与识别
+KEY_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-\.:/+=@!$%&*^~|]{6,}")
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+# 常见模型族前缀：命中这些形态的长参数优先当作模型名，避免被误判为密钥
+MODEL_FAMILY_PREFIXES = (
+    "gpt", "chatgpt", "o1", "o3", "o4", "claude", "gemini", "gemma", "glm",
+    "qwen", "deepseek", "kimi", "moonshot", "llama", "meta-llama", "mistral",
+    "mixtral", "codestral", "phi", "yi-", "ernie", "hunyuan", "doubao",
+    "minimax", "abab", "spark", "baichuan", "step-", "command", "grok",
+    "nova", "sonar", "pplx", "whisper", "tts-", "dall-e", "text-embedding",
+    "gpt-image", "sora", "veo", "imagen", "flux", "sdxl", "internlm",
+    "telechat", "sensechat", "bge-", "jina-", "nomic-", "voyage-", "rerank",
+    "openai", "anthropic", "google", "microsoft", "nvidia", "zhipu",
+    "moonshotai", "deepseek-ai", "baidu", "alibaba", "x-ai", "01-ai", "thudm",
 )
 
 
@@ -754,9 +776,76 @@ class BalancePlugin(Star):
             tpl = default
         return tpl
 
+    @staticmethod
+    def _strip_arg_prefix(token: str, prefixes: tuple[str, ...]) -> str | None:
+        """命中显式前缀时返回去掉前缀后的值（可能为空串），未命中返回 None"""
+        low = token.lower()
+        for prefix in prefixes:
+            if low.startswith(prefix):
+                return token[len(prefix):].strip().strip("\"'")
+        return None
+
     def _extract_keys(self, text: str) -> List[str]:
-        """从文本中提取以 sk- 开头的 API Key"""
-        return [t for t in text.split() if t.startswith("sk-")]
+        """提取 API Key：不要求 sk- 前缀；key:/密钥: 前缀可强制指定任意字符的密钥"""
+        keys: List[str] = []
+        for raw in text.split():
+            token = raw.strip()
+            explicit = self._strip_arg_prefix(token, KEY_ARG_PREFIXES)
+            if explicit is not None:
+                if explicit:
+                    keys.append(explicit)
+                continue
+            # model: 参数属于模型名，混进来时忽略，避免被当成密钥
+            if self._strip_arg_prefix(token, MODEL_ARG_PREFIXES) is not None:
+                continue
+            token = token.strip(",;，；")
+            if not token or "://" in token:
+                continue
+            # 只收 ASCII 密钥（含已知前缀的短密钥），中文等垃圾参数不当作密钥
+            if token.startswith(KEY_PREFIXES) or KEY_TOKEN_RE.fullmatch(token):
+                keys.append(token)
+        return keys
+
+    def _looks_like_model_name(self, token: str) -> bool:
+        """判断参数是否更像模型名：命中常见模型族前缀（支持 vendor/model 这类前缀写法）"""
+        low = token.lower().rsplit("/", 1)[-1]
+        return low.startswith(MODEL_FAMILY_PREFIXES)
+
+    def _looks_like_api_key(self, token: str) -> bool:
+        """判断单个参数是否更像 API 密钥：兼容无 sk- 前缀的自定义密钥，同时排除模型名与网址"""
+        if not token or "://" in token:
+            return False
+        if token.startswith(KEY_PREFIXES) or UUID_RE.fullmatch(token):
+            return True
+        if not KEY_TOKEN_RE.fullmatch(token) or self._looks_like_model_name(token):
+            return False
+        # 密钥通常是较长的随机串：要求字母数字混排，短参数按模型名处理
+        if len(token) < 16:
+            return False
+        if len(token) >= 32 and token.isalnum():
+            return True
+        return any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
+
+    def _split_key_and_model_args(self, tokens: List[str]) -> tuple[List[str], List[str]]:
+        """拆分 /测试 的参数为 (密钥, 模型名候选)；可用 key:/密钥: 与 model:/模型: 前缀强制指定"""
+        keys: List[str] = []
+        models: List[str] = []
+        for raw in tokens:
+            token = raw.strip()
+            if not token:
+                continue
+            explicit_key = self._strip_arg_prefix(token, KEY_ARG_PREFIXES)
+            if explicit_key is not None:
+                if explicit_key:
+                    keys.append(explicit_key)
+                continue
+            explicit_model = self._strip_arg_prefix(token, MODEL_ARG_PREFIXES)
+            if explicit_model is not None:
+                if explicit_model:
+                    models.append(explicit_model)
+                continue
+            (keys if self._looks_like_api_key(token) else models).append(token)
+        return keys, models
 
     def _format_multi_results(self, title: str, results, keys, display_name: str = "") -> str:
         """将多个查询结果格式化为结果字符串（按成功/失败分组）"""
@@ -895,9 +984,11 @@ class BalancePlugin(Star):
                     "Usage: /test <API endpoint> <API Key> [Key2]... [Model name]\n"
                     "Examples: /test https://api.example.com/v1 sk-xxxxxxxx\n"
                     "          /test https://api.example.com sk-xxxxxxxx deepseek-chat\n"
+                    "          /test https://api.example.com key:my-custom-key model:my-model\n"
                     "Auto-detects OpenAI-compatible endpoints: lists models and runs chat calls to verify the key.\n"
                     "Auto mode tests up to 3 chat models (stops on first failure);\n"
                     "An optional trailing model name tests that model directly (hard-tested even if not in the model list).\n"
+                    "Keys no longer need an sk- prefix; use key: / model: prefixes when a value is ambiguous.\n"
                     "Chinese alias: /测试"
                 )
             else:
@@ -906,9 +997,11 @@ class BalancePlugin(Star):
                     "用法：/测试 <API网址> <API Key> [API Key2]... [模型名]\n"
                     "示例：/测试 https://api.example.com/v1 sk-xxxxxxxx\n"
                     "      /测试 https://api.example.com sk-xxxxxxxx deepseek-chat\n"
+                    "      /测试 https://api.example.com key:自定义密钥 model:模型名\n"
                     "自动识别 OpenAI 兼容端点：列出可用模型并实测调用，验证 Key 是否有效。\n"
                     "自动模式最多实测前 3 个聊天类模型（遇失败即停）；\n"
                     "末尾可指定模型名，直接实测该模型（不在模型列表中也会硬测）。\n"
+                    "密钥不要求 sk- 前缀；识别歧义时可用 key: / model: 前缀明确指定。\n"
                     "英文别名：/test"
                 )
             yield event.plain_result(usage)
@@ -1053,7 +1146,7 @@ class BalancePlugin(Star):
         yield event.plain_result(msg)
 
     async def _query_by_platform(self, event: AstrMessageEvent, platform_name: str, extra_args: str = ""):
-        """根据平台简写/名称查询余额，支持传入自定义 API Key 列表（自动识别 sk- 开头的令牌）"""
+        """根据平台简写/名称查询余额，支持传入自定义 API Key 列表（不要求 sk- 前缀，可用 key: 强制指定）"""
         name_lower = platform_name.lower().strip()
 
         # 1. 通过简写映射查找平台 key
@@ -1074,8 +1167,9 @@ class BalancePlugin(Star):
             valid_keys = self._extract_keys(extra_args)
             if not valid_keys:
                 yield event.plain_result(
-                    f"❌ 在参数中未检测到有效的 API Key（需要以 sk- 开头）。\n"
-                    f"输入内容: {extra_args}"
+                    f"❌ 在参数中未检测到有效的 API Key。\n"
+                    f"输入内容: {extra_args}\n"
+                    f"提示：支持 sk- 之外的自定义密钥；含特殊字符或较短的密钥可写成 key:<密钥> 强制指定。"
                 )
                 return
 
@@ -1216,8 +1310,9 @@ class BalancePlugin(Star):
         valid_keys = self._extract_keys(extra_args)
         if not valid_keys:
             yield event.plain_result(
-                f"❌ 未检测到有效的 API Key（需要以 sk- 开头）。\n"
-                f"输入内容: {extra_args}"
+                f"❌ 未检测到有效的 API Key。\n"
+                f"输入内容: {extra_args}\n"
+                f"提示：支持 sk- 之外的自定义密钥；含特殊字符或较短的密钥可写成 key:<密钥> 强制指定。"
             )
             return
 
@@ -1345,40 +1440,43 @@ class BalancePlugin(Star):
         return BalanceResult("自定义端点", "Unknown", "0", error="无法获取余额信息 (API不支持或返回为空)")
 
     async def _query_model_test(self, event: AstrMessageEvent, api_base: str, extra_args: str = "", lang: str = "zh"):
-        """测试指定 API 端点的模型可用性（OpenAI 兼容），支持多个 API Key，可选指定模型名"""
+        """测试指定 API 端点的模型可用性（OpenAI 兼容），支持多个 API Key 与可选模型名（均可用 key:/model: 强制指定）"""
         en = lang != "zh"
         api_base = api_base.rstrip("/")
         if "/v1" in api_base:
             api_base = api_base.split("/v1")[0]
 
         tokens = extra_args.split()
-        valid_keys = [t for t in tokens if t.startswith("sk-")]
-        non_key_tokens = [t for t in tokens if not t.startswith("sk-")]
+        valid_keys, model_tokens = self._split_key_and_model_args(tokens)
 
-        if len(non_key_tokens) > 1:
+        if len(model_tokens) > 1:
             if en:
                 yield event.plain_result(
-                    f"❌ Too many model name arguments, only one allowed (tokens starting with sk- are API keys).\n"
-                    f"Input: {extra_args}"
+                    f"❌ Too many model name arguments, only one allowed.\n"
+                    f"Input: {extra_args}\n"
+                    f"Hint: other arguments are treated as API keys; prefix the model name with model: to be explicit."
                 )
             else:
                 yield event.plain_result(
-                    f"❌ 模型名参数过多，只能指定一个（以 sk- 开头的是 API Key）。\n"
-                    f"输入内容: {extra_args}"
+                    f"❌ 模型名参数过多，只能指定一个。\n"
+                    f"输入内容: {extra_args}\n"
+                    f"提示：其余参数按密钥识别，可用 model:<模型名> 明确指定模型名。"
                 )
             return
-        model_name = non_key_tokens[0] if non_key_tokens else ""
+        model_name = model_tokens[0] if model_tokens else ""
 
         if not valid_keys:
             if en:
                 yield event.plain_result(
-                    f"❌ No valid API key detected (must start with sk-).\n"
-                    f"Input: {extra_args}"
+                    f"❌ No valid API key detected.\n"
+                    f"Input: {extra_args}\n"
+                    f"Hint: custom keys are supported; prefix an ambiguous key with key: to be explicit."
                 )
             else:
                 yield event.plain_result(
-                    f"❌ 未检测到有效的 API Key（需要以 sk- 开头）。\n"
-                    f"输入内容: {extra_args}"
+                    f"❌ 未检测到有效的 API Key。\n"
+                    f"输入内容: {extra_args}\n"
+                    f"提示：支持 sk- 之外的自定义密钥，识别不出时可写成 key:<密钥> 强制指定。"
                 )
             return
 
@@ -1646,6 +1744,8 @@ class BalancePlugin(Star):
             + "  /余额 <平台简写> <key1> [key2]... - 批量查询自带平台的多个密钥余额\n"
             + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（自动识别 OpenAI/New API）\n"
             + "  /测试 <API网址> <key1> [key2]... [模型名] - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用，可指定模型）\n"
+            + "  密钥不要求 sk- 前缀，支持自定义/小众平台密钥；含特殊字符或较短的密钥可用 key: 前缀强制指定\n"
+            + "  /测试 中密钥与模型名歧义时，可用 key: / model: 前缀明确指定\n"
             + "  英文别名：/余额 = /balance，/测试 = /test\n"
             + "  子命令英文别名：当前 = current，所有 = all，帮助 = help\n"
             + "\n"

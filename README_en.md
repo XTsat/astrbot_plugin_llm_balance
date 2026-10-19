@@ -11,7 +11,7 @@
 - Query the balance of all configured models (auto-deduplicated, concurrent)
 - Query a specific platform's balance by its alias (multiple keys supported)
 - Pass an API key directly after the command (no need to configure it in AstrBot)
-- Batch-query multiple API keys (auto-detects `sk-` prefixed tokens)
+- Batch-query multiple API keys (auto-detects tokens; no `sk-` prefix required; use `key:` to force a value)
 - Query custom API endpoint balances (OpenAI Billing and New API compatible endpoints)
 - Test model availability on OpenAI-compatible endpoints (lists models and actually calls them)
 - Customizable platform aliases (used for command matching and provider auto-detection)
@@ -139,10 +139,18 @@ The `/test` command tests whether models on any OpenAI-compatible endpoint are u
 /test https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
 ```
 
+Keys no longer need an `sk-` prefix: custom keys from self-hosted gateways and niche platforms can be passed directly. For keys containing special characters, keys that are too short, or a key misdetected as a model name, prefix the value with `key:` (or `密钥:`); in `/test`, prefix a model name with `model:` (or `模型:`). The value after the prefix is used verbatim, with no further format checks:
+
+```
+/test https://api.example.com/v1 key:my-custom-key
+/test https://api.example.com key:my-custom-key model:my-finetune-v3
+/balance https://api.example.com/v1 key:abc!@#def
+```
+
 Test flow:
 1. Request `/v1/models` to fetch the available model list (also validates the API key)
 2. **Without a model name**: automatically picks chat/generation models, **tests at most the first 3** (stops on the first failure), calling `/v1/chat/completions` (`max_tokens=1`)
-3. **With a model name** (the last non-`sk-` argument): tests that model directly; it is tested even if it is not in the model list or the `/v1/models` endpoint is unavailable
+3. **With a model name** (the last non-key argument): tests that model directly; it is tested even if it is not in the model list or the `/v1/models` endpoint is unavailable
 4. Returns connection status, response latency, the available model list and the test results
 
 Output example:
@@ -161,7 +169,7 @@ Multiple keys are tested concurrently, and results are grouped by success/failur
 
 ## Batch Query
 
-Append multiple `sk-` prefixed keys after a platform alias or API endpoint; they are auto-detected and queried concurrently:
+Append multiple keys (no `sk-` prefix required) after a platform alias or API endpoint; they are auto-detected and queried concurrently. Write a key containing special characters or a very short key as `key:<key>`:
 
 ```
 /balance ds sk-xxx1 sk-xxx2 sk-xxx3
