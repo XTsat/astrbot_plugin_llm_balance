@@ -12,9 +12,10 @@
 - Query a specific platform's balance by its alias (multiple keys supported)
 - Pass an API key directly after the command (no need to configure it in AstrBot)
 - Batch-query multiple API keys (auto-detects tokens; no `sk-` prefix required; use `key:` to force a value)
-- Query custom API endpoint balances (OpenAI Billing and New API compatible endpoints)
+- Query custom API endpoint balances (unlisted providers are probed through the generic OpenAI Billing / New API interfaces; unsupported is reported only when both fail)
 - Test model availability on OpenAI-compatible endpoints (lists models and actually calls them)
-- Paste the NewAPI connection info JSON directly (balance with `/balance`, model test with `/test`) without splitting out the URL and key
+- Paste the NewAPI connection info JSON directly (balance with `/balance`, model test with `/test`) without splitting out the URL and key, then append more keys if needed
+- Quote a message that holds an endpoint and key, then send `/balance` or `/test` on its own to act on the quoted content
 - Customizable platform aliases (used for command matching and provider auto-detection)
 - Admin permission control
 - Fully customizable output templates (success/failure/title/separators)
@@ -28,8 +29,8 @@
 /balance all                        # query the balance of all configured models
 /balance <platform alias>             # query the balance of a configured AstrBot platform
 /balance <platform alias> <key1> [key2]...   # batch-query multiple keys of a platform
-/balance <API endpoint> <key1> [key2]...     # query a custom API endpoint (auto-detects OpenAI/New API)
-/balance <JSON config>                # paste NewAPI connection info directly to query balance
+/balance <API endpoint> <key1> [key2]...     # query a custom API endpoint (dedicated interface for known platforms, otherwise OpenAI Billing / New API probing)
+/balance <JSON config> [key2]...              # paste NewAPI connection info directly to query balance, more keys may follow
 /test <API endpoint> <key1> [key2]... # test model availability on an OpenAI-compatible endpoint
 ```
 
@@ -123,11 +124,12 @@ Supports querying the balance of API relay sites not in the preset list. When th
 /balance https://your-api.com/v1 sk-xxxx1 sk-xxxx2
 ```
 
-The query flow degrades automatically:
-1. **First** tries the OpenAI Billing API (`/v1/dashboard/billing/subscription` + `/usage`)
-2. **Falls back** to the New API format (`/api/usage/token`)
+The endpoint is routed as follows:
+1. A URL that belongs to a built-in platform (e.g. `api.deepseek.com`) uses **that platform's dedicated balance API**
+2. Anything else **first** tries the OpenAI Billing API (`/v1/dashboard/billing/subscription` + `/usage`), **then** falls back to the New API format (`/api/usage/token`)
+3. Only when both generic interfaces fail does the plugin report the endpoint as unsupported
 
-Works with one-api, new-api, AIProxy and similar relay sites.
+That means one-api, new-api, AIProxy and similar relay sites work right away without waiting for a plugin update. An account whose balance is `0` is reported as `0`, not as unsupported.
 
 ## Testing Model Availability
 
@@ -209,11 +211,19 @@ Copy the connection info from the NewAPI panel and paste it straight after `/bal
 
 ```
 /balance {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
+/balance {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} sk-yyy
 /test {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
 /test {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} deepseek-chat
 ```
 
-`/balance` queries the balance using the New API format; `/test` still lists the models and runs a real call, and a model name may follow.
+`/balance` picks whichever balance API that site supports (Billing or New API format), and extra keys may follow the JSON; `/test` still lists the models and runs a real call, and a model name may follow.
+
+If someone already posted a message with the endpoint and key (plain text or NewAPI JSON), **quote that message and send `/balance` on its own** to query the quoted content:
+
+```
+(quote a message containing sk-xxx and https://api.example.com)
+/balance
+```
 
 ## New API Multiple Instances
 

@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -129,6 +130,13 @@ MODEL_ARG_PREFIXES = ("model:", "模型:")
 # 指令词不是参数：引用消息常把整条指令（如「/测试 https://... sk-xxx」）原样粘回来，
 # 这类 token 识别不出是密钥就会落进模型名候选，被当成模型名硬测，必须先剔除
 COMMAND_WORD_TOKENS = frozenset({"测试", "test", "余额", "balance"})
+# 通用兜底探测（OpenAI Billing 系 / New API 系）全部落空时的统一提示前缀，
+# /余额 所有 依此把端点归入「未适配平台」，避免把「余额为 0」误报成不支持
+UNSUPPORTED_BALANCE_HINT = "无法获取余额信息"
+# OpenAI Billing 系余额响应的特征字段：命中任一才认为该端点确实提供 billing 接口，
+# 否则中转站对未知路径返回 200 + 无关 JSON 会被误判成「余额为 0」
+BILLING_FIELDS = ("soft_limit_usd", "hard_limit_usd", "system_hard_limit_usd",
+                  "access_until", "has_payment_method")
 # 密钥字符集：不含空白的可见 ASCII；URL、中文等不参与识别
 KEY_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-\.:/+=@!$%&*^~|]{6,}")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -199,10 +207,30 @@ class BaseBalanceFetcher(ABC):
     # 用于关键词匹配的别名列表（小写），供"余额 平台"命令模糊匹配
     aliases: list = []
 
-    @abstractmethod
+    # 适配的域名（按 host 精确判定，含子域），避免 deepseek-proxy.com 这类中转站被子串误命中
+    match_domains: tuple[str, ...] = ()
+
+    @staticmethod
+    def _host_of(api_base: str) -> str:
+        """取出 api_base 的小写 hostname；缺协议头时按 https 补全"""
+        raw = (api_base or "").strip()
+        if not raw:
+            return ""
+        if "://" not in raw:
+            raw = "https://" + raw
+        try:
+            return (urlparse(raw).hostname or "").lower()
+        except ValueError:
+            return ""
+
     def match(self, api_base: str) -> bool:
-        """判断当前 Fetcher 是否支持该 api_base"""
-        pass
+        """默认按域名精确判定：host 与 match_domains 相同或为其子域"""
+        if not self.match_domains:
+            return False
+        host = self._host_of(api_base)
+        if not host:
+            return False
+        return any(host == domain or host.endswith("." + domain) for domain in self.match_domains)
 
     @abstractmethod
     async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
@@ -222,11 +250,160 @@ class BaseBalanceFetcher(ABC):
 
 # ==================== 各平台 Fetcher ====================
 
-class DeepSeekFetcher(BaseBalanceFetcher):
-    aliases = ["deepseek", "ds", "深度求索"]
+# 余额接口探测：OpenAI Billing 系与 New API 系是全行业仅有的两种可被 API Key 打通的
+# 余额形态，专用平台适配之外统一靠这两个探测兜底（NewAPI 中转站、OneAPI、自建网关等都覆盖在内）。
+
+def _as_float(value, default: float = 0.0) -> float:
+    """把上游返回的数值字段转成 float；非数值时回落到默认值"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _billing_payload(data) -> dict | None:
+    """从 Billing 响应里取出有效荷载；不像 Billing 接口的响应返回 None"""
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        return None
+    return data if any(field in data for field in BILLING_FIELDS) else None
+
+
+def _newapi_payload(data) -> dict | None:
+    """从 New API 用量响应里取出 data 段；不是 New API 响应时返回 None"""
+    if not isinstance(data, dict):
+        return None
+    if not (data.get("code") or data.get("success")) or "data" not in data:
+        return None
+    inner = data.get("data")
+    return inner if isinstance(inner, dict) else {}
+
+
+def _newapi_balance_result(inner: dict, source_label: str) -> BalanceResult:
+    """把 New API 用量字段转成统一的余额结果"""
+    expires_at = inner.get("expires_at", 0)
+    expires_str = "永不过期" if not expires_at else datetime.fromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M:%S")
+    unlimited = inner.get("unlimited_quota", False)
+    return BalanceResult(
+        source_name=f"{source_label} ({inner.get('name', '-')})",
+        currency="",
+        total_balance=str(inner.get("total_granted", 0)),
+        used_balance=str(inner.get("total_used", 0)),
+        remaining_balance=str(inner.get("total_available", 0)),
+        raw_info=f"无限额度: {'是' if unlimited else '否'} | 到期: {expires_str}",
+    )
+
+
+async def _probe_billing(session: aiohttp.ClientSession, api_key: str, base_url: str,
+                         source_label: str = "自定义端点") -> BalanceResult | None:
+    """探测 OpenAI Billing 系余额接口；端点不提供该接口时返回 None 交给下一级。
+    余额为 0 的账户同样返回结果——「查得到 0」与「查不到接口」必须区分开。"""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
+    timeout = aiohttp.ClientTimeout(total=10)
+    base_url = base_url.rstrip("/")
+
+    try:
+        sub_url = f"{base_url}/v1/dashboard/billing/subscription"
+        async with session.get(sub_url, headers=headers, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            payload = _billing_payload(await resp.json())
+    except Exception:
+        # 探测本身失败一律降级到下一级探测，不中断整次查询
+        return None
+    if payload is None:
+        return None
+
+    account_balance = _as_float(payload.get("soft_limit_usd", payload.get("hard_limit_usd", 0)))
+    has_payment = bool(payload.get("has_payment_method", False))
+    access_until = payload.get("access_until", "无限制")
+
+    used_balance = 0.0
+    try:
+        today = datetime.today().strftime('%Y-%m-%d')
+        usage_url = f"{base_url}/v1/dashboard/billing/usage?start_date={today}&end_date={today}"
+        async with session.get(usage_url, headers=headers, timeout=timeout) as resp:
+            if resp.status == 200:
+                usage_data = await resp.json()
+                used_balance = _as_float(usage_data.get("total_usage", 0)) / 100
+    except Exception:
+        pass
+
+    return BalanceResult(
+        source_name=source_label,
+        currency="USD",
+        total_balance=f"{account_balance:.2f}",
+        remaining_balance=f"{account_balance - used_balance:.2f}",
+        used_balance=f"{used_balance:.2f}",
+        raw_info=f"{base_url} | 支付: {'是' if has_payment else '否'} | 到期: {access_until}",
+    )
+
+
+async def _probe_newapi_usage(session: aiohttp.ClientSession, api_key: str,
+                              base_url: str) -> BalanceResult | None:
+    """探测 New API 系的令牌用量接口；端点不是 New API 时返回 None"""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
+    try:
+        url = base_url.rstrip('/') + "/api/usage/token"
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            try:
+                data = await resp.json()
+            except Exception:
+                return None
+    except Exception:
+        return None
+
+    inner = _newapi_payload(data)
+    if inner is None:
+        # 结构像 New API 却被拒绝时把服务端原话带回去，便于区分「接口不存在」与「密钥/权限问题」
+        message = data.get("message") if isinstance(data, dict) else None
+        if message:
+            return BalanceResult("自定义端点", "Unknown", "0", error=f"New API 返回错误: {message}")
+        return None
+    return _newapi_balance_result(inner, "自定义端点")
+
+
+class GenericFetcher(BaseBalanceFetcher):
+    """通用兜底查询器：专用平台都没命中时接管。
+    先探 OpenAI Billing 系，再降级 New API 系，两系都不成立才报不支持。"""
+
+    aliases = []
 
     def match(self, api_base: str) -> bool:
-        return "deepseek" in api_base
+        # 兜底角色：由 BalanceManager 在所有专用 Fetcher 之后显式调用
+        return True
+
+    async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
+        base_url = (api_base or "").strip().rstrip("/")
+        if not base_url:
+            return BalanceResult("自定义端点", "Unknown", "0", error="未配置 API Base URL，无法查询余额")
+        if "/v1" in base_url:
+            base_url = base_url.split("/v1")[0]
+
+        result = await _probe_billing(session, api_key, base_url)
+        if result is not None:
+            return result
+        result = await _probe_newapi_usage(session, api_key, base_url)
+        if result is not None:
+            return result
+        return BalanceResult(
+            "自定义端点", "Unknown", "0",
+            error=f"{UNSUPPORTED_BALANCE_HINT} (未探测到 OpenAI Billing 或 New API 余额接口，该端点可能不支持余额查询)",
+        )
+
+
+class DeepSeekFetcher(BaseBalanceFetcher):
+    aliases = ["deepseek", "ds", "深度求索"]
+    match_domains = ("deepseek.com",)
 
     async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
         url = "https://api.deepseek.com/user/balance"
@@ -276,9 +453,7 @@ class DeepSeekFetcher(BaseBalanceFetcher):
 
 class SiliconCloudFetcher(BaseBalanceFetcher):
     aliases = ["siliconflow", "siliconcloud", "硅基", "硅基流动"]
-
-    def match(self, api_base: str) -> bool:
-        return "siliconflow" in api_base
+    match_domains = ("siliconflow.com", "siliconflow.cn")
 
     async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
         domain = "api.siliconflow.com"
@@ -316,9 +491,7 @@ class SiliconCloudFetcher(BaseBalanceFetcher):
 
 class MoonshotFetcher(BaseBalanceFetcher):
     aliases = ["moonshot", "kimi", "月之暗面"]
-
-    def match(self, api_base: str) -> bool:
-        return "moonshot.cn" in api_base
+    match_domains = ("moonshot.cn",)
 
     async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
         url = "https://api.moonshot.cn/v1/users/me/balance"
@@ -349,7 +522,8 @@ class ChatAnywhereFetcher(BaseBalanceFetcher):
     aliases = ["chatanywhere", "ca"]
 
     def match(self, api_base: str) -> bool:
-        return "chatanywhere" in api_base
+        # ChatAnywhere 有 .tech/.xyz 等多个后缀，按 host 含关键词判定，避免路径里的同名串误命中
+        return "chatanywhere" in self._host_of(api_base)
 
     async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
         base_url = api_base
@@ -362,13 +536,15 @@ class ChatAnywhereFetcher(BaseBalanceFetcher):
         }
 
         total_balance = 0.0
-        currency = "USD"
+        billing_ok = False
 
         try:
             async with session.get(sub_url, headers=headers) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    total_balance = data.get("hard_limit_usd", 0.0)
+                    payload = _billing_payload(await response.json())
+                    if payload is not None:
+                        billing_ok = True
+                        total_balance = _as_float(payload.get("hard_limit_usd", 0.0))
         except Exception:
             pass
 
@@ -385,19 +561,21 @@ class ChatAnywhereFetcher(BaseBalanceFetcher):
             async with session.get(usage_url, headers=headers, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
-                    total_usage_cents = data.get("total_usage", 0)
-                    used_balance = total_usage_cents / 100
+                    used_balance = _as_float(data.get("total_usage", 0)) / 100
         except Exception:
             pass
 
+        # 余额为 0 的账户照常返回：只有接口本身查不到才算不支持
+        if not billing_ok:
+            return BalanceResult(
+                "ChatAnywhere", "Unknown", "0",
+                error=f"{UNSUPPORTED_BALANCE_HINT} (该端点未提供 Billing 余额接口)",
+            )
+
         remaining = total_balance - used_balance
-
-        if total_balance == 0 and used_balance == 0:
-            return BalanceResult("ChatAnywhere", "Unknown", "0", error="无法获取余额信息 (API不支持或返回为空)")
-
         return BalanceResult(
             source_name="ChatAnywhere",
-            currency=currency,
+            currency="USD",
             total_balance=f"{total_balance:.2f}",
             remaining_balance=f"{remaining:.2f}",
             used_balance=f"{used_balance:.2f}"
@@ -406,63 +584,20 @@ class ChatAnywhereFetcher(BaseBalanceFetcher):
 
 class OpenAIFetcher(BaseBalanceFetcher):
     aliases = ["openai", "gpt", "chatgpt"]
-
-    def match(self, api_base: str) -> bool:
-        return "openai.com" in api_base
+    match_domains = ("openai.com",)
 
     async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
-        base_url = "https://api.openai.com"
-        if api_base and "openai.com" in api_base:
-            base_url = api_base.rstrip("/")
-            if "/v1" in base_url:
-                base_url = base_url.split("/v1")[0]
+        base_url = api_base.strip().rstrip("/") if api_base else "https://api.openai.com"
+        if "/v1" in base_url:
+            base_url = base_url.split("/v1")[0]
 
-        headers = {
-            'Authorization': f'Bearer {api_key}'
-        }
-
-        today = datetime.today().strftime('%Y-%m-%d')
-
-        # 获取订阅信息
-        subscription_url = f"{base_url}/v1/dashboard/billing/subscription"
-        account_balance = 0.0
-        has_payment = False
-        access_until = "无限制"
-
-        try:
-            async with session.get(subscription_url, headers=headers) as resp:
-                if resp.status == 200:
-                    sub_data = await resp.json()
-                    if isinstance(sub_data, list) and sub_data:
-                        account_balance = sub_data[0].get("soft_limit_usd", 0)
-                        has_payment = sub_data[0].get("has_payment_method", False)
-                        access_until = sub_data[0].get("access_until", "无限制")
-        except Exception:
-            pass
-
-        # 获取使用量
-        usage_url = f"{base_url}/v1/dashboard/billing/usage?start_date={today}&end_date={today}"
-        used_balance = 0.0
-        try:
-            async with session.get(usage_url, headers=headers) as resp:
-                if resp.status == 200:
-                    usage_data = await resp.json()
-                    used_balance = usage_data.get("total_usage", 0) / 100
-        except Exception:
-            pass
-
-        remaining = account_balance - used_balance
-
-        if account_balance == 0 and used_balance == 0:
-            return BalanceResult("OpenAI", "Unknown", "0", error="无法获取余额信息 (API不支持或返回为空)")
-
+        # 余额为 0 的账户也照常返回：只有「接口查不到」才判不支持
+        result = await _probe_billing(session, api_key, base_url, source_label="OpenAI")
+        if result is not None:
+            return result
         return BalanceResult(
-            source_name="OpenAI",
-            currency="USD",
-            total_balance=f"{account_balance:.2f}",
-            remaining_balance=f"{remaining:.2f}",
-            used_balance=f"{used_balance:.2f}",
-            raw_info=f"支付: {'是' if has_payment else '否'} | 到期: {access_until}"
+            "OpenAI", "Unknown", "0",
+            error=f"{UNSUPPORTED_BALANCE_HINT} (该端点未提供 Billing 余额接口，OpenAI 官方已限制 API Key 直接读取余额)",
         )
 
 
@@ -491,29 +626,12 @@ class NewApiFetcher(BaseBalanceFetcher):
                     text = await resp.text()
                     return BalanceResult("NEW API", "Unknown", "0", error=f"非JSON数据(HTTP {resp.status}): {text[:200]}")
 
-            ok_flag = bool(data.get("code", False) or data.get("success", False))
-            if not ok_flag or "data" not in data:
-                err = data.get("message") or f"HTTP {resp.status}"
+            inner = _newapi_payload(data)
+            if inner is None:
+                err = (data.get("message") if isinstance(data, dict) else None) or f"HTTP {resp.status}"
                 return BalanceResult("NEW API", "Unknown", "0", error=err)
 
-            d = data["data"] or {}
-            name = d.get("name", "-")
-            total_granted = d.get("total_granted", 0)
-            total_used = d.get("total_used", 0)
-            total_available = d.get("total_available", 0)
-            unlimited = d.get("unlimited_quota", False)
-            expires_at = d.get("expires_at", 0)
-
-            expires_str = "永不过期" if not expires_at else datetime.fromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M:%S")
-
-            return BalanceResult(
-                source_name=f"NEW API ({name})",
-                currency="",
-                total_balance=str(total_granted),
-                used_balance=str(total_used),
-                remaining_balance=str(total_available),
-                raw_info=f"无限额度: {'是' if unlimited else '否'} | 到期: {expires_str}"
-            )
+            return _newapi_balance_result(inner, "NEW API")
         except aiohttp.ClientError as e:
             return BalanceResult("NEW API", "Unknown", "0", error=f"网络错误: {e}")
 
@@ -540,6 +658,8 @@ class BalanceManager:
             OpenAIFetcher(),
             NewApiFetcher(),
         ]
+        # 兜底查询器不在 fetchers 里排队：配置好的 NEW API 实例要优先于它命中
+        self.generic_fetcher = GenericFetcher()
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -552,7 +672,7 @@ class BalanceManager:
             await self._session.close()
 
     async def query(self, api_key: str, api_base: str) -> BalanceResult:
-        """根据 api_base 自动匹配 Fetcher 并查询"""
+        """按 api_base 选路查询：专用平台 → 配置的 NEW API 实例 → 通用兜底"""
         if not api_key:
             return BalanceResult("Unknown", "Unknown", "0", error="未提供 API Key")
 
@@ -574,7 +694,13 @@ class BalanceManager:
                 result = await NewApiFetcher().fetch(session, api_key, newapi_url)
                 return result
 
-        return BalanceResult("Unknown", "Unknown", "0", error=f"暂不支持该 API Base: {api_base}")
+        # 都没命中就交给通用探测，不再直接判「暂不支持」
+        try:
+            return await self.generic_fetcher.fetch(session, api_key, api_base)
+        except aiohttp.ClientError as e:
+            return BalanceResult("Unknown", "Unknown", "0", error=f"网络错误: {e}")
+        except Exception as e:
+            return BalanceResult("Unknown", "Unknown", "0", error=f"内部错误: {e}")
 
 
 # ==================== 主插件类 ====================
@@ -794,6 +920,17 @@ class BalancePlugin(Star):
         """判断参数是否只是指令词（可带前导 /，兼容全角斜杠）；引用消息粘回整条指令时用于剔除"""
         return token.lstrip("/／").lower() in COMMAND_WORD_TOKENS
 
+    @staticmethod
+    def _strip_command_words(text: str) -> str:
+        """剥掉文本开头粘着的指令词与前导斜杠（引用消息常把整条指令原样带回）"""
+        text = (text or "").strip()
+        while text and text[0] in ("/", "／"):
+            text = text[1:].strip()
+        for cmd in COMMAND_WORD_TOKENS:
+            if text.lower().startswith(cmd):
+                return text[len(cmd):].strip()
+        return text
+
     def _extract_keys(self, text: str) -> List[str]:
         """提取 API Key：不要求 sk- 前缀；key:/密钥: 前缀可强制指定任意字符的密钥"""
         keys: List[str] = []
@@ -962,25 +1099,37 @@ class BalancePlugin(Star):
             return
 
         # 解析子命令
-        full_text = event.message_str.strip()
-        if full_text.startswith("/"):
-            full_text = full_text[1:]
-        for cmd in ("余额", "balance"):
-            if full_text.startswith(cmd):
-                full_text = full_text[len(cmd):].strip()
-                break
+        full_text = self._strip_command_words(event.message_str)
+        from_quote = False
+        # 引用一条含站点与密钥的消息后，/余额 本身可以不带参数
+        if not full_text:
+            full_text = self._strip_command_words(self._get_quoted_text(event))
+            from_quote = bool(full_text)
         parts = full_text.split(maxsplit=1)
         raw_sub = parts[0] if parts else ""
         sub_command = raw_sub.lower()
 
+        if from_quote and not (
+            sub_command.startswith(("http://", "https://"))
+            or full_text.startswith("{")
+            or self._resolve_endpoint_abbr(raw_sub) or self._resolve_endpoint_abbr(sub_command)
+        ):
+            yield event.plain_result(
+                "❌ 引用的消息里没找到 API 网址或连接信息。\n"
+                "提示：引用内容需含网址与密钥（如 https://api.example.com/v1 sk-xxx），"
+                "或改用 /余额 当前 查询当前会话所用模型的余额。"
+            )
+            return
+
         # 粘贴的 NewAPI 连接信息可能含空格，按整段文本识别，不依赖首个空格切分
         conn = self._parse_conn_info(full_text)
         if conn is not None:
-            api_url, api_key, _ = conn
+            api_url, api_key, rest = conn
             if not api_url or not api_key:
                 yield event.plain_result("❌ 连接信息中缺少 key 或 url。")
                 return
-            async for msg in self._query_newapi_conn_info(event, api_url, api_key):
+            # 密钥走 key: 前缀避免被当成其它参数；JSON 之后仍可继续追加更多密钥
+            async for msg in self._query_custom(event, api_url, f"key:{api_key} {rest}".strip()):
                 yield msg
             return
 
@@ -1217,7 +1366,7 @@ class BalancePlugin(Star):
             # 把密钥标签插入到首行（平台名）下方
             text = self._format_result(res, masked_key)
             if res.error:
-                if "暂不支持" in res.error:
+                if UNSUPPORTED_BALANCE_HINT in res.error:
                     unsupported_ids.append(display_name)
                 else:
                     res.source_name = display_name
@@ -1405,8 +1554,8 @@ class BalancePlugin(Star):
         yield event.plain_result(msg)
 
     async def _query_custom(self, event: AstrMessageEvent, api_base: str, extra_args: str = ""):
-        """查询自定义 API 端点的余额"""
-        api_base = api_base.rstrip("/")
+        """查询自定义 API 端点的余额：域名命中专用平台时走专用接口，否则交给通用探测兜底"""
+        api_base = api_base.strip().rstrip("/")
         if "/v1" in api_base:
             api_base = api_base.split("/v1")[0]
 
@@ -1421,109 +1570,10 @@ class BalancePlugin(Star):
 
         yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个密钥的余额，请稍候...")
         msg = await self._query_and_format(
-            f"{api_base} 余额查询", valid_keys,
-            lambda s, k: self._query_openai_compatible(s, k, api_base),
+            f"{self._apply_platform_name_map(api_base)} 余额查询", valid_keys,
+            lambda s, k: self.manager.query(k, api_base),
         )
         yield event.plain_result(msg)
-
-    async def _query_newapi_conn_info(self, event: AstrMessageEvent, api_url: str, api_key: str):
-        """用 NewAPI 连接信息中的 url 与 key 查询余额"""
-        yield event.plain_result(f"🔄 正在查询 {api_url} 的余额，请稍候...")
-        session = await self.manager._get_session()
-        result = await NewApiFetcher().fetch(session, api_key, api_url)
-        msg = self._header(f"{api_url} 余额查询")
-        msg += self._sep()
-        msg += self._format_result(result, self._mask_key(api_key))
-        yield event.plain_result(msg)
-
-    async def _query_openai_compatible(self, session: aiohttp.ClientSession, api_key: str, base_url: str) -> BalanceResult:
-        """查询自定义端点余额，优先 OpenAI Billing API，降级 New API 格式"""
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-        }
-
-        # 尝试 OpenAI Billing API
-        account_balance = 0.0
-        has_payment = False
-        access_until = "无限制"
-
-        try:
-            sub_url = f"{base_url}/v1/dashboard/billing/subscription"
-            async with session.get(sub_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    sub_data = await resp.json()
-                    if isinstance(sub_data, dict):
-                        account_balance = float(sub_data.get("soft_limit_usd", sub_data.get("hard_limit_usd", 0)))
-                        has_payment = sub_data.get("has_payment_method", False)
-                        access_until = sub_data.get("access_until", "无限制")
-                    elif isinstance(sub_data, list) and sub_data:
-                        account_balance = float(sub_data[0].get("soft_limit_usd", 0))
-                        has_payment = sub_data[0].get("has_payment_method", False)
-                        access_until = sub_data[0].get("access_until", "无限制")
-
-            if account_balance != 0:
-                usage_url = f"{base_url}/v1/dashboard/billing/usage?start_date={datetime.today().strftime('%Y-%m-%d')}&end_date={datetime.today().strftime('%Y-%m-%d')}"
-                used_balance = 0.0
-                try:
-                    async with session.get(usage_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status == 200:
-                            usage_data = await resp.json()
-                            used_balance = float(usage_data.get("total_usage", 0)) / 100
-                except Exception:
-                    pass
-
-                remaining = account_balance - used_balance
-                return BalanceResult(
-                    source_name="自定义端点",
-                    currency="USD",
-                    total_balance=f"{account_balance:.2f}",
-                    remaining_balance=f"{remaining:.2f}",
-                    used_balance=f"{used_balance:.2f}",
-                    raw_info=f"{self._apply_platform_name_map(base_url)} | 支付: {'是' if has_payment else '否'} | 到期: {access_until}"
-                )
-        except Exception:
-            pass
-
-        # 降级尝试 New API 格式
-        try:
-            url = base_url.rstrip('/') + "/api/usage/token"
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                try:
-                    data = await resp.json()
-                except Exception:
-                    text = await resp.text()
-                    return BalanceResult("自定义端点", "Unknown", "0",
-                        error=f"New API 返回非JSON(HTTP {resp.status}): {text[:200]}")
-
-            ok_flag = bool(data.get("code", False) or data.get("success", False))
-            if ok_flag and "data" in data:
-                d = data["data"] or {}
-                total_granted = d.get("total_granted", 0)
-                total_used = d.get("total_used", 0)
-                total_available = d.get("total_available", 0)
-                unlimited = d.get("unlimited_quota", False)
-                expires_at = d.get("expires_at", 0)
-                expires_str = "永不过期" if not expires_at else datetime.fromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M:%S")
-
-                return BalanceResult(
-                    source_name="自定义端点",
-                    currency="",
-                    total_balance=str(total_granted),
-                    used_balance=str(total_used),
-                    remaining_balance=str(total_available),
-                    raw_info=f"{self._apply_platform_name_map(base_url)} | 无限额度: {'是' if unlimited else '否'} | 到期: {expires_str}"
-                )
-
-            err = data.get("message", "未知错误") if isinstance(data, dict) else str(data)[:200]
-            return BalanceResult("自定义端点", "Unknown", "0", error=f"New API 返回错误: {err}")
-        except aiohttp.ClientError as e:
-            return BalanceResult("自定义端点", "Unknown", "0", error=f"New API 请求失败: {e}")
-        except Exception as e:
-            return BalanceResult("自定义端点", "Unknown", "0", error=f"New API 处理异常: {e}")
-
-        return BalanceResult("自定义端点", "Unknown", "0", error="无法获取余额信息 (API不支持或返回为空)")
 
     async def _query_model_test(self, event: AstrMessageEvent, api_base: str, extra_args: str = "", lang: str = "zh"):
         """测试指定 API 端点的模型可用性（OpenAI 兼容），支持多个 API Key 与可选模型名（均可用 key:/model: 强制指定）"""
@@ -1829,12 +1879,13 @@ class BalancePlugin(Star):
             + "  /余额 所有 - 查询所有已配置模型的余额\n"
             + "  /余额 <平台简写> - 查询指定平台余额（配置中的或自带站点）\n"
             + "  /余额 <平台简写> <key1> [key2]... - 批量查询自带平台的多个密钥余额\n"
-            + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（自动识别 OpenAI/New API）\n"
-            + "  /余额 <NewAPI连接信息JSON> - 粘贴 NewAPI 复制连接信息，直接查询余额\n"
+            + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（域名命中专用平台时走专用接口，否则按 OpenAI Billing / New API 通用探测）\n"
+            + "  /余额 <NewAPI连接信息JSON> [key2]... - 粘贴连接信息直接查询余额，JSON 之后可继续追加更多密钥\n"
             + "  /测试 <API网址> <key1> [key2]... [模型名] - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用，可指定模型）\n"
             + "  /测试 <NewAPI连接信息JSON> [模型名] - 粘贴 NewAPI 复制连接信息，自动取其中的网址与密钥实测模型\n"
             + "  密钥不要求 sk- 前缀，支持自定义/小众平台密钥；含特殊字符或较短的密钥可用 key: 前缀强制指定\n"
             + "  /测试 中密钥与模型名歧义时，可用 key: / model: 前缀明确指定\n"
+            + "  引用一条含网址与密钥的消息后只发 /余额（或 /测试），即查询或测试这条被引用的内容\n"
             + "  英文别名：/余额 = /balance，/测试 = /test\n"
             + "  子命令英文别名：当前 = current，所有 = all，帮助 = help\n"
             + "\n"

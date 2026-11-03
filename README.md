@@ -12,9 +12,10 @@
 - 按平台简写查询指定平台余额（支持多密钥）
 - 命令后直接传 API Key 查询（无需在 AstrBot 中配置）
 - 批量查询多个 API Key（自动识别令牌，不要求 `sk-` 前缀，可用 `key:` 强制指定）
-- 自定义 API 端点余额查询（支持 OpenAI Billing 与 New API 兼容端点）
+- 自定义 API 端点余额查询（未适配的平台自动按 OpenAI Billing / New API 两种通用接口探测，都查不到才提示不支持）
 - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用）
-- 直接粘贴 NewAPI 连接信息 JSON（`/余额` 查余额、`/测试` 实测模型），无需手动拆出网址和密钥
+- 直接粘贴 NewAPI 连接信息 JSON（`/余额` 查余额、`/测试` 实测模型），无需手动拆出网址和密钥；JSON 之后还能继续追加更多密钥
+- 引用一条含网址与密钥的消息，只发 `/余额` 或 `/测试` 即可处理被引用的内容
 - 可自定义平台别名（用于命令匹配和 Provider 自动识别）
 - 管理员权限控制
 - 完全可自定义的输出模板（成功/失败/标题/分隔符）
@@ -28,8 +29,8 @@
 /余额 所有                          # 查询所有已配置模型的余额
 /余额 <平台简写>                     # 查询指定 AstrBot 配置平台的余额
 /余额 <平台简写> <key1> [key2]...   # 批量查询指定平台的多个密钥余额
-/余额 <API端口> <key1> [key2]...   # 查询自定义 API 端点的余额（自动识别 OpenAI/New API）
-/余额 <JSON配置>                    # 直接粘贴 NewAPI 复制连接信息查询余额
+/余额 <API端口> <key1> [key2]...   # 查询自定义 API 端点的余额（命中内置平台走专用接口，否则自动探测 OpenAI Billing / New API）
+/余额 <JSON配置> [key2]...          # 直接粘贴 NewAPI 复制连接信息查询余额，可继续追加更多密钥
 /测试 <API网址> <key1> [key2]... # 测试 OpenAI 兼容端点的模型可用性
 ```
 
@@ -123,11 +124,12 @@
 /余额 https://your-api.com/v1 sk-xxxx1 sk-xxxx2
 ```
 
-查询流程自动降级：
-1. **优先**尝试 OpenAI Billing API（`/v1/dashboard/billing/subscription` + `/usage`）
-2. **降级**尝试 New API 格式（`/api/usage/token`）
+查询流程自动选路：
+1. 网址属于内置平台（如 `api.deepseek.com`）时，**走该平台的专用余额接口**
+2. 不完全属于内置平台时，**先**尝试 OpenAI Billing API（`/v1/dashboard/billing/subscription` + `/usage`），**再**降级 New API 格式（`/api/usage/token`）
+3. 两种通用接口都探测不到，才提示该端点不支持余额查询
 
-适用于 one-api、new-api、AIProxy 等各类中转站。
+因此 one-api、new-api、AIProxy 等各类中转站无需等插件适配，直接按上面的方式传网址和密钥即可。余额为 0 的账户会正常显示 `0`，不会误报成「不支持」。
 
 ## 测试模型可用性
 
@@ -209,11 +211,19 @@ deepseek-chat
 
 ```
 /余额 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
+/余额 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} sk-yyy
 /测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
 /测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} deepseek-chat
 ```
 
-`/余额` 用 NewAPI 格式查询余额；`/测试` 照常拉取模型列表并实测调用，末尾可再跟模型名。
+`/余额` 自动挑该站支持的余额接口（Billing 或 New API 格式），JSON 之后还能继续追加更多密钥一起查；`/测试` 照常拉取模型列表并实测调用，末尾可再跟模型名。
+
+群里已经有人发过一条带站点和密钥的消息（文本或 NewAPI JSON 都行）时，也可以**引用那条消息、只发 `/余额`**，直接查被引用的内容：
+
+```
+（引用一条含 sk-xxx 与 https://api.example.com 的消息）
+/余额
+```
 
 ## NEW API 多实例
 
