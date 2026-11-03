@@ -164,6 +164,14 @@ You can also paste the connection info copied from the NewAPI panel (the JSON ho
 /test {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"} deepseek-chat
 ```
 
+If someone already posted a message with the endpoint and key (plain text or NewAPI JSON), **quote that message and send `/test` on its own** to test it without copying anything again — append a model name to target one model:
+
+```
+(quoting a message that contains sk-xxx and https://api.example.com)
+/test
+/test deepseek-chat
+```
+
 Test flow:
 1. Request `/v1/models` to fetch the available model list (also validates the API key)
 2. **Without a model name**: automatically picks chat/generation models, **tests at most the first 3** (stops on the first failure), calling `/v1/chat/completions` (`max_tokens=1`)

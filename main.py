@@ -864,6 +864,23 @@ class BalancePlugin(Star):
         key = str(data.get("key") or "").strip()
         return url, key, text[end:].strip()
 
+    def _get_quoted_text(self, event: AstrMessageEvent) -> str:
+        """取出被引用消息的纯文本；平台没给解析结果时退回消息段里的文本，取不到返回空串"""
+        try:
+            from astrbot.api.message_components import Reply
+
+            for comp in event.get_messages() or []:
+                if not isinstance(comp, Reply):
+                    continue
+                text = (comp.message_str or "").strip()
+                if text:
+                    return text
+                parts = [c.text for c in (comp.chain or []) if isinstance(getattr(c, "text", None), str)]
+                return " ".join(p.strip() for p in parts if p.strip())
+        except Exception as e:
+            logger.warning(f"[astrbot_plugin_llm_balance] ⚠️ 解析引用消息失败: {e}")
+        return ""
+
     def _split_endpoint_args(self, text: str) -> tuple[str, str] | None:
         """找出参数里的 API 端点，返回 (端点, 其余参数)；网址与密钥顺序不限、可用换行分隔，也认 platform_names 缩写"""
         tokens = text.split()
@@ -1012,8 +1029,10 @@ class BalancePlugin(Star):
                 break
         tokens = full_text.split()
         raw = tokens[0] if tokens else ""
+        # 引用一条含站点与密钥的消息时，/测试 本身可以不带参数
+        quoted_text = self._get_quoted_text(event)
 
-        if raw == "" or raw in ("帮助", "help"):
+        if raw in ("帮助", "help") or (raw == "" and not quoted_text):
             if lang == "en":
                 usage = (
                     "ℹ️ **Test Model Availability**\n"
@@ -1029,6 +1048,7 @@ class BalancePlugin(Star):
                     "Keys no longer need an sk- prefix; use key: / model: prefixes when a value is ambiguous.\n"
                     "The URL and key can be in any order, and one per line (newline separated) works too.\n"
                     "You can also paste the NewAPI connection info JSON copied from the panel: its url and key are used directly.\n"
+                    "Quote a message holding the endpoint and key, then send /test alone to test that quoted content.\n"
                     "Chinese alias: /测试"
                 )
             else:
@@ -1046,12 +1066,18 @@ class BalancePlugin(Star):
                     "密钥不要求 sk- 前缀；识别歧义时可用 key: / model: 前缀明确指定。\n"
                     "网址与密钥顺序不限，一条一行（换行分隔）同样可以。\n"
                     "也可直接粘贴 NewAPI 复制连接信息 JSON，自动取其中的网址与密钥；末尾仍可加模型名。\n"
+                    "引用一条含站点与密钥的消息后只发 /测试，即测试这条被引用的内容。\n"
                     "英文别名：/test"
                 )
             yield event.plain_result(usage)
             return
 
-        conn = self._parse_conn_info(full_text)
+        # 参数来源优先用指令自带的参数；自己没写网址时回退到被引用的消息
+        args_text = full_text
+        if quoted_text and self._parse_conn_info(full_text) is None and self._split_endpoint_args(full_text) is None:
+            args_text = " ".join(part for part in (quoted_text, full_text) if part).strip()
+
+        conn = self._parse_conn_info(args_text)
         if conn is not None:
             api_url, api_key, rest = conn
             if not api_url or not api_key:
@@ -1065,17 +1091,28 @@ class BalancePlugin(Star):
                 yield msg
             return
 
-        endpoint_args = self._split_endpoint_args(full_text)
+        endpoint_args = self._split_endpoint_args(args_text)
         if endpoint_args is None:
-            if lang == "en":
+            used_quote = args_text != full_text
+            if lang == "en" and used_quote:
+                yield event.plain_result(
+                    "❌ No API endpoint found in the quoted message (it must start with http:// or https://); "
+                    "you can also put the endpoint and key right after the command."
+                )
+            elif lang == "en":
                 yield event.plain_result(
                     f"❌ Please enter an API endpoint, format: /test <API endpoint> <API Key>\n"
-                    f"Input: {full_text}"
+                    f"Input: {args_text}"
+                )
+            elif used_quote:
+                yield event.plain_result(
+                    "❌ 引用的消息里没找到 API 网址（需以 http:// 或 https:// 开头），"
+                    "也可以直接在指令后面写上网址和密钥。"
                 )
             else:
                 yield event.plain_result(
                     f"❌ 请输入 API 网址，格式：/测试 <API网址> <API Key>\n"
-                    f"输入内容: {full_text}"
+                    f"输入内容: {args_text}"
                 )
             return
 

@@ -164,6 +164,14 @@ deepseek-chat
 /测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"} deepseek-chat
 ```
 
+群里已经有人发过一条带站点和密钥的消息（文本或 NewAPI JSON 都行）时，**引用那条消息、只发 `/测试`** 就能直接测它，不用再复制一遍；引用后还想指定模型，追加 `模型名` 即可：
+
+```
+（引用一条含 sk-xxx 与 https://api.example.com 的消息）
+/测试
+/测试 deepseek-chat
+```
+
 测试流程：
 1. 请求 `/v1/models` 拉取可用模型列表（同时验证 API Key 是否有效）
 2. **未指定模型名**：自动挑选聊天/生成类模型，**最多实测前 3 个**（遇失败即停），实测调用 `/v1/chat/completions`（`max_tokens=1`）
