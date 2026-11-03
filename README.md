@@ -1,6 +1,6 @@
 <div align="center">
-<h1>大模型余额查询</h1>
-<p><strong>查询各大模型平台余额，支持批量查询多个令牌，支持查询 Astrbot 内置的端点、传递平台或传递 API 端点、自定义的 NewAPI 站点；支持测试 OpenAI 兼容端点的模型可用性</strong></p>
+<h1>大模型余额查询与测试</h1>
+<p><strong>查询各大模型平台余额，支持多令牌批量查询与自定义中转站；并可测试 OpenAI 兼容端点的模型可用性</strong></p>
 <p><sub>余额查询 &nbsp;&nbsp; 多平台 &nbsp;&nbsp; 模型测试</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>

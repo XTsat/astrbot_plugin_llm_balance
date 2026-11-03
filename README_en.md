@@ -1,6 +1,6 @@
 <div align="center">
 <h1>LLM Balance</h1>
-<p><strong>Query balances across major LLM platforms, batch-query multiple tokens, query built-in AstrBot endpoints, pass a platform or an API endpoint, and query custom NewAPI sites; also supports testing model availability on OpenAI-compatible endpoints</strong></p>
+<p><strong>Query balances across major LLM platforms with batch token support and custom relay sites, and test model availability on OpenAI-compatible endpoints</strong></p>
 <p><sub>balance &nbsp;&nbsp; multi-platform &nbsp;&nbsp; model testing</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
