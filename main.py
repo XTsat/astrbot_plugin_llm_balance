@@ -126,6 +126,9 @@ KEY_PREFIXES = ("sk-", "sk_", "pk-", "rk-", "AKID", "AIza", "eyJ")
 # 显式前缀：命中后前缀部分不参与识别，值按原样使用（含特殊字符、过短或与模型名混淆时兜底）
 KEY_ARG_PREFIXES = ("key:", "密钥:")
 MODEL_ARG_PREFIXES = ("model:", "模型:")
+# 指令词不是参数：引用消息常把整条指令（如「/测试 https://... sk-xxx」）原样粘回来，
+# 这类 token 识别不出是密钥就会落进模型名候选，被当成模型名硬测，必须先剔除
+COMMAND_WORD_TOKENS = frozenset({"测试", "test", "余额", "balance"})
 # 密钥字符集：不含空白的可见 ASCII；URL、中文等不参与识别
 KEY_TOKEN_RE = re.compile(r"[A-Za-z0-9_\-\.:/+=@!$%&*^~|]{6,}")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -786,6 +789,11 @@ class BalancePlugin(Star):
                 return token[len(prefix):].strip().strip("\"'")
         return None
 
+    @staticmethod
+    def _is_command_token(token: str) -> bool:
+        """判断参数是否只是指令词（可带前导 /，兼容全角斜杠）；引用消息粘回整条指令时用于剔除"""
+        return token.lstrip("/／").lower() in COMMAND_WORD_TOKENS
+
     def _extract_keys(self, text: str) -> List[str]:
         """提取 API Key：不要求 sk- 前缀；key:/密钥: 前缀可强制指定任意字符的密钥"""
         keys: List[str] = []
@@ -844,6 +852,8 @@ class BalancePlugin(Star):
             if explicit_model is not None:
                 if explicit_model:
                     models.append(explicit_model)
+                continue
+            if self._is_command_token(token):
                 continue
             (keys if self._looks_like_api_key(token) else models).append(token)
         return keys, models
@@ -1556,15 +1566,16 @@ class BalancePlugin(Star):
                 )
             return
 
-        target_desc = f", model {model_name}" if model_name else ""
+        shown_base = self._apply_platform_name_map(api_base)
         if en:
-            yield event.plain_result(f"🔄 Testing {len(valid_keys)} key(s) against {self._apply_platform_name_map(api_base)}{target_desc}, please wait...")
+            target_desc = f", model {model_name}" if model_name else ""
+            yield event.plain_result(f"🔄 Testing {len(valid_keys)} key(s) against {shown_base}{target_desc}, please wait...")
         else:
-            yield event.plain_result(f"🔄 正在测试 {len(valid_keys)} 个密钥连接 {self._apply_platform_name_map(api_base)}{target_desc}，请稍候...")
+            target_desc = f"，模型 {model_name}" if model_name else ""
+            yield event.plain_result(f"🔄 正在测试 {len(valid_keys)} 个密钥连接 {shown_base}{target_desc}，请稍候...")
         session = await self.manager._get_session()
         tasks = [self._test_model_openai_compatible(session, key, api_base, model_name, lang) for key in valid_keys]
         results = await asyncio.gather(*tasks)
-        shown_base = self._apply_platform_name_map(api_base)
         title = f"Model Test: {shown_base}" if en else f"{shown_base} 模型测试"
         msg = self._format_model_test_results(title, results, valid_keys, lang)
         yield event.plain_result(msg)
