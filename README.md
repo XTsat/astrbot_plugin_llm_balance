@@ -14,6 +14,7 @@
 - 批量查询多个 API Key（自动识别令牌，不要求 `sk-` 前缀，可用 `key:` 强制指定）
 - 自定义 API 端点余额查询（支持 OpenAI Billing 与 New API 兼容端点）
 - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用）
+- 直接粘贴 NewAPI 连接信息 JSON（`/余额` 查余额、`/测试` 实测模型），无需手动拆出网址和密钥
 - 可自定义平台别名（用于命令匹配和 Provider 自动识别）
 - 管理员权限控制
 - 完全可自定义的输出模板（成功/失败/标题/分隔符）
@@ -147,6 +148,13 @@
 /余额 https://api.example.com/v1 key:abc!@#def
 ```
 
+也可以直接把 NewAPI 面板复制的连接信息（含 `key` 与 `url` 的 JSON）粘在 `/测试` 后面，插件自动取其中的网址和密钥，末尾仍可加模型名：
+
+```
+/测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"}
+/测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"} deepseek-chat
+```
+
 测试流程：
 1. 请求 `/v1/models` 拉取可用模型列表（同时验证 API Key 是否有效）
 2. **未指定模型名**：自动挑选聊天/生成类模型，**最多实测前 3 个**（遇失败即停），实测调用 `/v1/chat/completions`（`max_tokens=1`）
@@ -180,13 +188,15 @@
 
 ## 粘贴 NewAPI 连接信息
 
-在 NewAPI 面板中复制连接信息后，直接粘贴到 `/余额` 后面即可查询：
+在 NewAPI 面板中复制连接信息后，直接粘到 `/余额` 或 `/测试` 后面即可，插件自动取 JSON 里的 `key` 和 `url`，不用手动拆开：
 
 ```
 /余额 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
+/测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
+/测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} deepseek-chat
 ```
 
-插件自动解析 JSON 中的 key 和 url 并用 NewAPI 格式查询余额。
+`/余额` 用 NewAPI 格式查询余额；`/测试` 照常拉取模型列表并实测调用，末尾可再跟模型名。
 
 ## NEW API 多实例
 

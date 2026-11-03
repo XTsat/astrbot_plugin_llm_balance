@@ -14,6 +14,7 @@
 - Batch-query multiple API keys (auto-detects tokens; no `sk-` prefix required; use `key:` to force a value)
 - Query custom API endpoint balances (OpenAI Billing and New API compatible endpoints)
 - Test model availability on OpenAI-compatible endpoints (lists models and actually calls them)
+- Paste the NewAPI connection info JSON directly (balance with `/balance`, model test with `/test`) without splitting out the URL and key
 - Customizable platform aliases (used for command matching and provider auto-detection)
 - Admin permission control
 - Fully customizable output templates (success/failure/title/separators)
@@ -147,6 +148,13 @@ Keys no longer need an `sk-` prefix: custom keys from self-hosted gateways and n
 /balance https://api.example.com/v1 key:abc!@#def
 ```
 
+You can also paste the connection info copied from the NewAPI panel (the JSON holding `key` and `url`) right after `/test`; the plugin picks up the URL and key automatically, and a model name can still follow:
+
+```
+/test {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"}
+/test {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"} deepseek-chat
+```
+
 Test flow:
 1. Request `/v1/models` to fetch the available model list (also validates the API key)
 2. **Without a model name**: automatically picks chat/generation models, **tests at most the first 3** (stops on the first failure), calling `/v1/chat/completions` (`max_tokens=1`)
@@ -180,13 +188,15 @@ Results are grouped by success/failure.
 
 ## Pasting NewAPI Connection Info
 
-Copy the connection info from the NewAPI panel and paste it directly after `/balance`:
+Copy the connection info from the NewAPI panel and paste it straight after `/balance` or `/test`; the plugin reads the `key` and `url` out of the JSON for you:
 
 ```
 /balance {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
+/test {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
+/test {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} deepseek-chat
 ```
 
-The plugin parses the `key` and `url` from the JSON and queries the balance using the New API format.
+`/balance` queries the balance using the New API format; `/test` still lists the models and runs a real call, and a model name may follow.
 
 ## New API Multiple Instances
 

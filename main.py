@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import time
 from abc import ABC, abstractmethod
@@ -847,6 +848,22 @@ class BalancePlugin(Star):
             (keys if self._looks_like_api_key(token) else models).append(token)
         return keys, models
 
+    def _parse_conn_info(self, text: str) -> tuple[str, str, str] | None:
+        """解析粘贴的 NewAPI 连接信息 JSON，返回 (url, key, 剩余参数)；不是 JSON 开头时返回 None"""
+        text = text.strip()
+        if not text.startswith("{"):
+            return None
+        try:
+            # raw_decode 只吃掉 JSON 对象本身，末尾追加的模型名等参数留在剩余文本里
+            data, end = json.JSONDecoder().raw_decode(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        url = str(data.get("url") or "").strip()
+        key = str(data.get("key") or "").strip()
+        return url, key, text[end:].strip()
+
     def _format_multi_results(self, title: str, results, keys, display_name: str = "") -> str:
         """将多个查询结果格式化为结果字符串（按成功/失败分组）"""
         success_list = []
@@ -916,6 +933,17 @@ class BalancePlugin(Star):
         raw_sub = parts[0] if parts else ""
         sub_command = raw_sub.lower()
 
+        # 粘贴的 NewAPI 连接信息可能含空格，按整段文本识别，不依赖首个空格切分
+        conn = self._parse_conn_info(full_text)
+        if conn is not None:
+            api_url, api_key, _ = conn
+            if not api_url or not api_key:
+                yield event.plain_result("❌ 连接信息中缺少 key 或 url。")
+                return
+            async for msg in self._query_newapi_conn_info(event, api_url, api_key):
+                yield msg
+            return
+
         if sub_command == "" or sub_command == "帮助" or sub_command == "help":
             yield event.plain_result(self._get_help_text())
         elif sub_command == "当前" or sub_command == "current":
@@ -927,10 +955,6 @@ class BalancePlugin(Star):
         elif sub_command.startswith("http://") or sub_command.startswith("https://"):
             extra = parts[1].strip() if len(parts) > 1 else ""
             async for msg in self._query_custom(event, sub_command, extra):
-                yield msg
-        elif raw_sub.startswith("{"):
-            extra = parts[1].strip() if len(parts) > 1 else ""
-            async for msg in self._query_newapi_conn_info(event, raw_sub, extra):
                 yield msg
         else:
             extra = parts[1].strip() if len(parts) > 1 else ""
@@ -985,10 +1009,12 @@ class BalancePlugin(Star):
                     "Examples: /test https://api.example.com/v1 sk-xxxxxxxx\n"
                     "          /test https://api.example.com sk-xxxxxxxx deepseek-chat\n"
                     "          /test https://api.example.com key:my-custom-key model:my-model\n"
+                    "          /test {\"_type\":\"newapi_channel_conn\",\"key\":\"sk-xxxxxxxx\",\"url\":\"https://api.example.com\"} deepseek-chat\n"
                     "Auto-detects OpenAI-compatible endpoints: lists models and runs chat calls to verify the key.\n"
                     "Auto mode tests up to 3 chat models (stops on first failure);\n"
                     "An optional trailing model name tests that model directly (hard-tested even if not in the model list).\n"
                     "Keys no longer need an sk- prefix; use key: / model: prefixes when a value is ambiguous.\n"
+                    "You can also paste the NewAPI connection info JSON copied from the panel: its url and key are used directly.\n"
                     "Chinese alias: /测试"
                 )
             else:
@@ -998,14 +1024,31 @@ class BalancePlugin(Star):
                     "示例：/测试 https://api.example.com/v1 sk-xxxxxxxx\n"
                     "      /测试 https://api.example.com sk-xxxxxxxx deepseek-chat\n"
                     "      /测试 https://api.example.com key:自定义密钥 model:模型名\n"
+                    "      /测试 {\"_type\":\"newapi_channel_conn\",\"key\":\"sk-xxxxxxxx\",\"url\":\"https://api.example.com\"} deepseek-chat\n"
                     "自动识别 OpenAI 兼容端点：列出可用模型并实测调用，验证 Key 是否有效。\n"
                     "自动模式最多实测前 3 个聊天类模型（遇失败即停）；\n"
                     "末尾可指定模型名，直接实测该模型（不在模型列表中也会硬测）。\n"
                     "密钥不要求 sk- 前缀；识别歧义时可用 key: / model: 前缀明确指定。\n"
+                    "也可直接粘贴 NewAPI 复制连接信息 JSON，自动取其中的网址与密钥；末尾仍可加模型名。\n"
                     "英文别名：/test"
                 )
             yield event.plain_result(usage)
             return
+
+        conn = self._parse_conn_info(full_text)
+        if conn is not None:
+            api_url, api_key, rest = conn
+            if not api_url or not api_key:
+                if lang == "en":
+                    yield event.plain_result("❌ The connection info is missing key or url.")
+                else:
+                    yield event.plain_result("❌ 连接信息中缺少 key 或 url。")
+                return
+            # 密钥走 key: 前缀，避免被当成模型名；rest 里可继续写 model 或其它参数
+            async for msg in self._query_model_test(event, api_url, f"key:{api_key} {rest}".strip(), lang):
+                yield msg
+            return
+
         if not (url.startswith("http://") or url.startswith("https://")):
             resolved = self._resolve_endpoint_abbr(raw) or self._resolve_endpoint_abbr(url)
             if resolved:
@@ -1323,25 +1366,8 @@ class BalancePlugin(Star):
         )
         yield event.plain_result(msg)
 
-    async def _query_newapi_conn_info(self, event: AstrMessageEvent, json_text: str, extra_args: str = ""):
-        """解析 NewAPI 复制连接信息 JSON 并查询余额"""
-        import json
-        try:
-            config = json.loads(json_text)
-        except json.JSONDecodeError:
-            yield event.plain_result(f"❌ 无法解析 JSON 配置。")
-            return
-
-        if config.get("_type") != "newapi_channel_conn":
-            yield event.plain_result(f"❌ 不支持的配置类型: {config.get('_type')}")
-            return
-
-        api_key = config.get("key", "")
-        api_url = config.get("url", "")
-        if not api_key or not api_url:
-            yield event.plain_result(f"❌ 配置中缺少 key 或 url。")
-            return
-
+    async def _query_newapi_conn_info(self, event: AstrMessageEvent, api_url: str, api_key: str):
+        """用 NewAPI 连接信息中的 url 与 key 查询余额"""
         yield event.plain_result(f"🔄 正在查询 {api_url} 的余额，请稍候...")
         session = await self.manager._get_session()
         result = await NewApiFetcher().fetch(session, api_key, api_url)
@@ -1743,7 +1769,9 @@ class BalancePlugin(Star):
             + "  /余额 <平台简写> - 查询指定平台余额（配置中的或自带站点）\n"
             + "  /余额 <平台简写> <key1> [key2]... - 批量查询自带平台的多个密钥余额\n"
             + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（自动识别 OpenAI/New API）\n"
+            + "  /余额 <NewAPI连接信息JSON> - 粘贴 NewAPI 复制连接信息，直接查询余额\n"
             + "  /测试 <API网址> <key1> [key2]... [模型名] - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用，可指定模型）\n"
+            + "  /测试 <NewAPI连接信息JSON> [模型名] - 粘贴 NewAPI 复制连接信息，自动取其中的网址与密钥实测模型\n"
             + "  密钥不要求 sk- 前缀，支持自定义/小众平台密钥；含特殊字符或较短的密钥可用 key: 前缀强制指定\n"
             + "  /测试 中密钥与模型名歧义时，可用 key: / model: 前缀明确指定\n"
             + "  英文别名：/余额 = /balance，/测试 = /test\n"
