@@ -140,6 +140,15 @@ The `/test` command tests whether models on any OpenAI-compatible endpoint are u
 /test https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
 ```
 
+The URL and the key can come in **any order**, and pasting one value per line works too (newlines count as spaces):
+
+```
+/test sk-xxxx https://api.example.com deepseek-chat
+/test sk-xxxx
+https://api.example.com
+deepseek-chat
+```
+
 Keys no longer need an `sk-` prefix: custom keys from self-hosted gateways and niche platforms can be passed directly. For keys containing special characters, keys that are too short, or a key misdetected as a model name, prefix the value with `key:` (or `密钥:`); in `/test`, prefix a model name with `model:` (or `模型:`). The value after the prefix is used verbatim, with no further format checks:
 
 ```

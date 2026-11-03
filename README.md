@@ -140,6 +140,15 @@
 /测试 https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
 ```
 
+网址和密钥的**先后顺序不限**，从面板里分几行复制也可以（换行当空格用）：
+
+```
+/测试 sk-xxxx https://api.example.com deepseek-chat
+/测试 sk-xxxx
+https://api.example.com
+deepseek-chat
+```
+
 密钥不要求 `sk-` 前缀：自建网关、小众平台的自定义密钥可直接传入。含特殊字符、过短或与模型名互相误判的密钥，用 `key:`（或 `密钥:`）前缀强制指定；`/测试` 中模型名则用 `model:`（或 `模型:`）前缀。前缀后的内容按原样使用，不再做格式判断：
 
 ```

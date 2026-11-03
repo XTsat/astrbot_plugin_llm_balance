@@ -864,6 +864,19 @@ class BalancePlugin(Star):
         key = str(data.get("key") or "").strip()
         return url, key, text[end:].strip()
 
+    def _split_endpoint_args(self, text: str) -> tuple[str, str] | None:
+        """找出参数里的 API 端点，返回 (端点, 其余参数)；网址与密钥顺序不限、可用换行分隔，也认 platform_names 缩写"""
+        tokens = text.split()
+        for index, token in enumerate(tokens):
+            if token.lower().startswith(("http://", "https://")):
+                return token, " ".join(tokens[:index] + tokens[index + 1:])
+        # 网址不是必填在最前，缩写在哪个位置都尝试解析一次
+        for index, token in enumerate(tokens):
+            resolved = self._resolve_endpoint_abbr(token) or self._resolve_endpoint_abbr(token.lower())
+            if resolved:
+                return resolved, " ".join(tokens[:index] + tokens[index + 1:])
+        return None
+
     def _format_multi_results(self, title: str, results, keys, display_name: str = "") -> str:
         """将多个查询结果格式化为结果字符串（按成功/失败分组）"""
         success_list = []
@@ -997,9 +1010,8 @@ class BalancePlugin(Star):
             if full_text.startswith(cmd):
                 full_text = full_text[len(cmd):].strip()
                 break
-        parts = full_text.split(maxsplit=1)
-        raw = parts[0] if parts else ""
-        url = raw.lower()
+        tokens = full_text.split()
+        raw = tokens[0] if tokens else ""
 
         if raw == "" or raw in ("帮助", "help"):
             if lang == "en":
@@ -1010,10 +1022,12 @@ class BalancePlugin(Star):
                     "          /test https://api.example.com sk-xxxxxxxx deepseek-chat\n"
                     "          /test https://api.example.com key:my-custom-key model:my-model\n"
                     "          /test {\"_type\":\"newapi_channel_conn\",\"key\":\"sk-xxxxxxxx\",\"url\":\"https://api.example.com\"} deepseek-chat\n"
+                    "          /test sk-xxxxxxxx https://api.example.com deepseek-chat\n"
                     "Auto-detects OpenAI-compatible endpoints: lists models and runs chat calls to verify the key.\n"
                     "Auto mode tests up to 3 chat models (stops on first failure);\n"
                     "An optional trailing model name tests that model directly (hard-tested even if not in the model list).\n"
                     "Keys no longer need an sk- prefix; use key: / model: prefixes when a value is ambiguous.\n"
+                    "The URL and key can be in any order, and one per line (newline separated) works too.\n"
                     "You can also paste the NewAPI connection info JSON copied from the panel: its url and key are used directly.\n"
                     "Chinese alias: /测试"
                 )
@@ -1025,10 +1039,12 @@ class BalancePlugin(Star):
                     "      /测试 https://api.example.com sk-xxxxxxxx deepseek-chat\n"
                     "      /测试 https://api.example.com key:自定义密钥 model:模型名\n"
                     "      /测试 {\"_type\":\"newapi_channel_conn\",\"key\":\"sk-xxxxxxxx\",\"url\":\"https://api.example.com\"} deepseek-chat\n"
+                    "      /测试 sk-xxxxxxxx https://api.example.com deepseek-chat\n"
                     "自动识别 OpenAI 兼容端点：列出可用模型并实测调用，验证 Key 是否有效。\n"
                     "自动模式最多实测前 3 个聊天类模型（遇失败即停）；\n"
                     "末尾可指定模型名，直接实测该模型（不在模型列表中也会硬测）。\n"
                     "密钥不要求 sk- 前缀；识别歧义时可用 key: / model: 前缀明确指定。\n"
+                    "网址与密钥顺序不限，一条一行（换行分隔）同样可以。\n"
                     "也可直接粘贴 NewAPI 复制连接信息 JSON，自动取其中的网址与密钥；末尾仍可加模型名。\n"
                     "英文别名：/test"
                 )
@@ -1049,25 +1065,22 @@ class BalancePlugin(Star):
                 yield msg
             return
 
-        if not (url.startswith("http://") or url.startswith("https://")):
-            resolved = self._resolve_endpoint_abbr(raw) or self._resolve_endpoint_abbr(url)
-            if resolved:
-                raw = url = resolved
-            elif lang == "en":
+        endpoint_args = self._split_endpoint_args(full_text)
+        if endpoint_args is None:
+            if lang == "en":
                 yield event.plain_result(
                     f"❌ Please enter an API endpoint, format: /test <API endpoint> <API Key>\n"
-                    f"Input: {raw}"
+                    f"Input: {full_text}"
                 )
-                return
             else:
                 yield event.plain_result(
                     f"❌ 请输入 API 网址，格式：/测试 <API网址> <API Key>\n"
-                    f"输入内容: {raw}"
+                    f"输入内容: {full_text}"
                 )
-                return
+            return
 
-        extra = parts[1].strip() if len(parts) > 1 else ""
-        async for msg in self._query_model_test(event, raw, extra, lang):
+        api_base, extra = endpoint_args
+        async for msg in self._query_model_test(event, api_base, extra, lang):
             yield msg
 
     async def _query_current(self, event: AstrMessageEvent):
