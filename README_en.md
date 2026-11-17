@@ -236,6 +236,14 @@ http://192.168.1.2:3000
 
 The plugin matches each URL to its corresponding provider key and queries them separately.
 
+## FAQ
+
+**The official OpenAI endpoint reports "unable to get balance info" — is the plugin broken?**
+No. OpenAI does not publish an API for reading account balance with an API key (the endpoint is not part of the official OpenAPI specification), so no tool can retrieve it. Check your balance and usage in the OpenAI dashboard (Billing page). The plugin now includes the returned status in the message, so you can tell an official restriction from an invalid key or a network problem.
+
+**I get no balance and want to see which URLs the plugin actually called.**
+Set the AstrBot log level to `DEBUG` and run the query again. Log lines tagged `🔍 余额探测` show each probe endpoint and its response status, and `🔀 余额选路` shows which fetcher the site finally used — enough to tell an unsupported balance API apart from a key or network problem.
+
 ## Security Note
 
 Queries containing API keys are best done in private chats to avoid leaking them in group chats.

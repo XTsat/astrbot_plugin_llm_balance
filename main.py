@@ -261,6 +261,14 @@ def _as_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _log_probe(step: str, url: str, status: int | None, detail: str = "") -> None:
+    """记录单级余额探测的结果：探测失败是常态（换下一级即可），只在 DEBUG 级别输出，
+    用户把日志级别调到 DEBUG 就能看到每一级试了哪个网址、返回什么，不必再靠猜。"""
+    outcome = f"HTTP {status}" if status is not None else "连接失败"
+    suffix = f" | {detail}" if detail else ""
+    logger.debug(f"[astrbot_plugin_llm_balance] 🔍 余额探测 [{step}] {url} -> {outcome}{suffix}")
+
+
 def _billing_payload(data) -> dict | None:
     """从 Billing 响应里取出有效荷载；不像 Billing 接口的响应返回 None"""
     if isinstance(data, list):
@@ -296,9 +304,11 @@ def _newapi_balance_result(inner: dict, source_label: str) -> BalanceResult:
 
 
 async def _probe_billing(session: aiohttp.ClientSession, api_key: str, base_url: str,
-                         source_label: str = "自定义端点") -> BalanceResult | None:
+                         source_label: str = "自定义端点",
+                         diagnostics: dict | None = None) -> BalanceResult | None:
     """探测 OpenAI Billing 系余额接口；端点不提供该接口时返回 None 交给下一级。
-    余额为 0 的账户同样返回结果——「查得到 0」与「查不到接口」必须区分开。"""
+    余额为 0 的账户同样返回结果——「查得到 0」与「查不到接口」必须区分开。
+    diagnostics 会被写入最后一步的 status，供调用方把失败原因说清楚。"""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -310,14 +320,20 @@ async def _probe_billing(session: aiohttp.ClientSession, api_key: str, base_url:
     try:
         sub_url = f"{base_url}/v1/dashboard/billing/subscription"
         async with session.get(sub_url, headers=headers, timeout=timeout) as resp:
+            if diagnostics is not None:
+                diagnostics["status"] = resp.status
             if resp.status != 200:
+                _log_probe("billing/subscription", sub_url, resp.status)
                 return None
             payload = _billing_payload(await resp.json())
-    except Exception:
+    except Exception as e:
         # 探测本身失败一律降级到下一级探测，不中断整次查询
+        _log_probe("billing/subscription", sub_url, None, f"{type(e).__name__}: {e}")
         return None
     if payload is None:
+        _log_probe("billing/subscription", sub_url, 200, "响应不是 Billing 结构")
         return None
+    _log_probe("billing/subscription", sub_url, 200)
 
     account_balance = _as_float(payload.get("soft_limit_usd", payload.get("hard_limit_usd", 0)))
     has_payment = bool(payload.get("has_payment_method", False))
@@ -328,11 +344,12 @@ async def _probe_billing(session: aiohttp.ClientSession, api_key: str, base_url:
         today = datetime.today().strftime('%Y-%m-%d')
         usage_url = f"{base_url}/v1/dashboard/billing/usage?start_date={today}&end_date={today}"
         async with session.get(usage_url, headers=headers, timeout=timeout) as resp:
+            _log_probe("billing/usage", usage_url, resp.status)
             if resp.status == 200:
                 usage_data = await resp.json()
                 used_balance = _as_float(usage_data.get("total_usage", 0)) / 100
-    except Exception:
-        pass
+    except Exception as e:
+        _log_probe("billing/usage", usage_url, None, f"{type(e).__name__}: {e}")
 
     return BalanceResult(
         source_name=source_label,
@@ -342,6 +359,20 @@ async def _probe_billing(session: aiohttp.ClientSession, api_key: str, base_url:
         used_balance=f"{used_balance:.2f}",
         raw_info=f"{base_url} | 支付: {'是' if has_payment else '否'} | 到期: {access_until}",
     )
+
+
+def _billing_unavailable_reason(diagnostics: dict | None) -> str:
+    """把 Billing 探测的最后一步状态翻译成用户能照着处理的说明。
+    401/403 既可能是官方已收紧该接口，也可能是密钥本身无效，两者都写出来避免误导。"""
+    status = (diagnostics or {}).get("status")
+    if status in (401, 403):
+        return (f"该接口返回 HTTP {status}：可能是 OpenAI 已限制用 API Key 读取余额，"
+                f"也可能是密钥无效，请到 OpenAI 后台查看用量与余额")
+    if status == 404:
+        return "OpenAI 官方已下线该余额接口（HTTP 404），请到 OpenAI 后台查看用量与余额"
+    if status is None:
+        return "连接 OpenAI 失败，请检查网络或代理设置"
+    return f"余额接口返回 HTTP {status}"
 
 
 async def _probe_newapi_usage(session: aiohttp.ClientSession, api_key: str,
@@ -355,11 +386,14 @@ async def _probe_newapi_usage(session: aiohttp.ClientSession, api_key: str,
     try:
         url = base_url.rstrip('/') + "/api/usage/token"
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            _log_probe("newapi/usage/token", url, resp.status)
             try:
                 data = await resp.json()
             except Exception:
+                _log_probe("newapi/usage/token", url, resp.status, "响应不是 JSON")
                 return None
-    except Exception:
+    except Exception as e:
+        _log_probe("newapi/usage/token", url, None, f"{type(e).__name__}: {e}")
         return None
 
     inner = _newapi_payload(data)
@@ -592,12 +626,16 @@ class OpenAIFetcher(BaseBalanceFetcher):
             base_url = base_url.split("/v1")[0]
 
         # 余额为 0 的账户也照常返回：只有「接口查不到」才判不支持
-        result = await _probe_billing(session, api_key, base_url, source_label="OpenAI")
+        diagnostics: dict = {}
+        result = await _probe_billing(session, api_key, base_url, source_label="OpenAI",
+                                      diagnostics=diagnostics)
         if result is not None:
             return result
+        # OpenAI 官方账号本身不设余额，且官方已收紧该接口：把「为什么查不到」写清楚，
+        # 否则用户只会看到一句「API不支持」而不知道是官方限制还是密钥/网络问题
         return BalanceResult(
             "OpenAI", "Unknown", "0",
-            error=f"{UNSUPPORTED_BALANCE_HINT} (该端点未提供 Billing 余额接口，OpenAI 官方已限制 API Key 直接读取余额)",
+            error=f"{UNSUPPORTED_BALANCE_HINT} ({_billing_unavailable_reason(diagnostics)})",
         )
 
 
@@ -681,6 +719,7 @@ class BalanceManager:
         # 优先匹配特定平台
         for fetcher in self.fetchers:
             if fetcher.match(api_base):
+                logger.debug(f"[astrbot_plugin_llm_balance] 🔀 余额选路: {api_base} -> {type(fetcher).__name__}")
                 try:
                     return await fetcher.fetch(session, api_key, api_base)
                 except aiohttp.ClientError as e:
@@ -691,10 +730,12 @@ class BalanceManager:
         # NEW API 只在 provider 的 api_base 包含某个配置的 newapi URL 时才查询
         for newapi_url in self.newapi_urls:
             if newapi_url.lower() in api_base.lower():
+                logger.debug(f"[astrbot_plugin_llm_balance] 🔀 余额选路: {api_base} -> NewApiFetcher ({newapi_url})")
                 result = await NewApiFetcher().fetch(session, api_key, newapi_url)
                 return result
 
         # 都没命中就交给通用探测，不再直接判「暂不支持」
+        logger.debug(f"[astrbot_plugin_llm_balance] 🔀 余额选路: {api_base} -> GenericFetcher")
         try:
             return await self.generic_fetcher.fetch(session, api_key, api_base)
         except aiohttp.ClientError as e:
