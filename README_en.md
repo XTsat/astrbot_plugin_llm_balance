@@ -23,32 +23,33 @@
 
 ## Usage
 
+Both commands accept the same arguments: either a `<platform alias>` or an `<API endpoint>`, followed by keys (plus an optional model name for `/test`).
+
 ```
-/balance                               # show help
-/balance current                    # query the balance of the model used by the current session
-/balance all                        # query the balance of all configured models
-/balance <platform alias>             # query the balance of a configured AstrBot platform
-/balance <platform alias> <key1> [key2]...   # batch-query multiple keys of a platform
-/balance <API endpoint> <key1> [key2]...     # query a custom API endpoint (dedicated interface for known platforms, otherwise OpenAI Billing / New API probing)
-/balance <JSON config> [key2]...              # paste NewAPI connection info directly to query balance, more keys may follow
-/test <API endpoint> <key1> [key2]... # test model availability on an OpenAI-compatible endpoint
-/test <platform alias> <key1> [key2]... # test via a platform alias (same names as /balance, e.g. ds, kimi)
+/balance                            # show help
+/balance current | /balance all     # balance of the current session / all configured models
+/balance <platform alias>           # balance of a platform you configured in AstrBot
+/balance <platform alias> <key1> [key2]...  # batch-query that platform with the given keys
+/balance <API endpoint> <key1> [key2]...    # balance of any endpoint (dedicated API for known platforms, otherwise Billing / New API probing)
+/test <platform alias> <key1> [key2]... [model]  # test model availability on that platform
+/test <API endpoint> <key1> [key2]... [model]     # test any OpenAI-compatible endpoint
+/balance|/test <JSON config> [...]  # paste NewAPI connection info; URL and key are extracted automatically
 ```
 
 English aliases: `/balance` (same as `/余额`) and `/test` (same as `/测试`); subcommand aliases: 当前 = `current`, 所有 = `all`, 帮助 = `help`.
 
 ## Supported Platforms
 
-| Platform | Aliases |
+| Platform | Available aliases |
 |---|---|
-| DeepSeek | `deepseek` / `ds` |
-| SiliconFlow | `siliconflow` / `siliconcloud` / `sc` |
-| Moonshot (Kimi) | `moonshot.cn` / `moonshot` / `kimi` |
-| OpenAI | `openai.com` / `openai` / `gpt` / `chatgpt` |
-| ChatAnywhere | `chatanywhere` / `ca` |
-| NEW API | `newapi` / `new` |
+| DeepSeek | `deepseek` / `ds` / `深度求索` |
+| SiliconFlow | `siliconflow` / `sc` / `硅基` / `硅基流动` / `sc-cn` / `硅基cn` |
+| Moonshot (Kimi) | `moonshot` / `kimi` / `月之暗面` |
+| OpenAI | `openai` / `gpt` / `chatgpt` |
+| ChatAnywhere | `chatanywhere` |
+| NEW API | `newapi` |
 
-Aliases can be customized in the plugin config.
+Aliases come from the `platform_names` config item and are shared by `/balance` and `/test`; add, edit or remove them freely. Platforms without a fixed domain (ChatAnywhere, NEW API) can only be addressed by their own platform name.
 
 ## Configuration
 
@@ -62,8 +63,7 @@ Aliases can be customized in the plugin config.
 | `openai_admin_key` | string | empty | OpenAI admin key (`sk-admin-…`, optional): when set, querying the official OpenAI endpoint reports **this month's accumulated spend** (OpenAI has no balance API, so this is spend, not remaining credit) |
 | `request_timeout` | float | `10.0` | Request timeout (seconds) |
 | `show_unsupported` | bool | `true` | Show unsupported platforms in `/balance all` |
-| `platform_aliases` | object | — | Per-platform aliases, comma-separated |
-| `platform_names` | list | — | API endpoint abbreviation map: each item `endpoint=abbr1,abbr2` (one endpoint may have multiple comma-separated abbreviations, multiple rows allowed); shown endpoints are replaced by the first abbreviation, and `/balance` `/test` accept any abbreviation as the endpoint argument |
+| `platform_names` | list | 5 presets for common platforms | API endpoint and platform alias map: each item `endpoint=abbr1,abbr2` (one endpoint may have multiple comma-separated abbreviations, multiple rows allowed). Abbreviations work for both `/balance <abbr>` and `/test <abbr>`, and shown endpoints are replaced by the first one. Ships with DeepSeek / SiliconFlow / Moonshot / OpenAI presets, all editable or removable |
 
 ### Output Templates
 
@@ -118,15 +118,43 @@ Between multiple results in the same section; empty means a blank line. Default:
 
 Between success/failure/unsupported sections. Default: `════════════════════════════════════════`
 
-## Custom API Endpoint Query
+## Platform Aliases and Custom Endpoints
 
-Supports querying the balance of API relay sites not in the preset list. When the command starts with `http://` or `https://`, the plugin enters custom endpoint mode:
+`/balance` and `/test` share the same arguments: either a `<platform alias>` or an `<API endpoint>`, followed by keys (plus an optional model name for `/test`).
+
+### Using a platform alias
+
+```
+/balance ds sk-xxxx     # DeepSeek balance
+/test ds sk-xxxx        # DeepSeek model availability
+/test kimi sk-xxxx      # Moonshot
+/test openai sk-xxxx    # official OpenAI
+```
+
+Aliases come from the `platform_names` config item, which ships with common platforms preset — **both the address and the alias are fully editable and removable**:
+
+```
+https://api.deepseek.com=ds,deepseek,深度求索
+https://api.siliconflow.com=sc,硅基,硅基流动
+https://api.siliconflow.cn=sc-cn,硅基cn
+https://api.moonshot.cn=kimi,moonshot,月之暗面
+https://api.openai.com=openai,gpt,chatgpt
+```
+
+To test your own relay, just replace the address, e.g. `https://my-relay.com=ds`, and `/test ds sk-xxx` will test that relay. Remove a line and that alias stops working (`/balance` can still query the platform by its platform name such as `deepseek`).
+
+> Note: `/balance <alias>` prefers the provider you configured for that platform in AstrBot (so a relay is queried through the relay); only a full URL triggers endpoint-mode querying.
+
+### Using a full URL
+
+When the command starts with `http://` or `https://`, the plugin enters custom endpoint mode:
 
 ```
 /balance https://your-api.com/v1 sk-xxxx1 sk-xxxx2
+/test https://your-api.com/v1 sk-xxxx1 sk-xxxx2 deepseek-chat
 ```
 
-The endpoint is routed as follows:
+For `/balance` the endpoint is routed as follows:
 1. A URL that belongs to a built-in platform (e.g. `api.deepseek.com`) uses **that platform's dedicated balance API**
 2. Anything else **first** tries the OpenAI Billing-compatible API (`/v1/dashboard/billing/subscription` + `/usage`, implemented by relay sites), **then** falls back to the New API format (`/api/usage/token`)
 3. Only when both generic interfaces fail does the plugin report the endpoint as unsupported
@@ -152,36 +180,20 @@ Once `openai_admin_key` is configured (`sk-admin-…`, created under Organizatio
 
 Note this is **spend**, not **balance**: OpenAI bills against prepaid credit, and `/organization/costs` only reports consumed amounts — check the remaining credit in the OpenAI dashboard. Without `openai_admin_key`, querying the official endpoint reports that no balance is available and explains why.
 
-## Testing Model Availability
+## Test Flow
 
-The `/test` command tests whether models on any OpenAI-compatible endpoint are usable. The format matches the custom endpoint balance query: `command + URL + API key`, with an optional **model name** at the end.
+`/test` first lists the models and then makes a real call, confirming both that the key works and that a model actually responds:
+
+1. Requests `/v1/models` to list available models (which also validates the API key)
+2. **No model name given**: picks chat/generation models automatically and tests **up to 3** (stops on the first failure) via `/v1/chat/completions` with `max_tokens=1`
+3. **Model name given** (the last non-key argument): tests that model directly, even if it is absent from the model list or `/v1/models` itself is unavailable
+4. Reports connection status, latency, the model list and the test result
 
 ```
 /test https://api.example.com/v1 sk-xxxx
 /test https://api.example.com sk-xxxx1 sk-xxxx2
 /test https://api.example.com sk-xxxx deepseek-chat
-/test https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
 ```
-
-You can also use a **platform alias** directly, no full URL needed:
-
-```
-/test ds sk-xxxx        # same as /test https://api.deepseek.com sk-xxxx
-/test kimi sk-xxxx      # Moonshot
-/test openai sk-xxxx    # official OpenAI
-```
-
-These aliases come from the `platform_names` config item, which ships with common platforms preset — **both the address and the alias are fully editable and removable**:
-
-```
-https://api.deepseek.com=ds,deepseek,深度求索
-https://api.siliconflow.com=sc,硅基,硅基流动
-https://api.siliconflow.cn=sc-cn,硅基cn
-https://api.moonshot.cn=kimi,moonshot,月之暗面
-https://api.openai.com=openai,gpt,chatgpt
-```
-
-To test your own relay, just replace the address, e.g. `https://my-relay.com=ds`, and `/test ds sk-xxx` will test that relay. Remove a line and that alias stops working (`/balance` can still query the platform by its platform alias).
 
 The URL and the key can come in **any order**, and pasting one value per line works too (newlines count as spaces):
 

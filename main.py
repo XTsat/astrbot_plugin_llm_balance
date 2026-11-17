@@ -869,36 +869,55 @@ class BalancePlugin(Star):
         self._build_platform_config()
 
     def _build_platform_config(self):
-        """根据配置构建别名映射表和匹配关键词表（两者使用同一个配置源）"""
+        """构建平台别名表：别名统一由 platform_names 提供，/余额 与 /测试 共用同一份配置。
+
+        每条 `连接=缩写1,缩写2` 中，连接的域名决定它属于哪个内置平台，缩写同时用作
+        命令别名（/余额 ds）与网址缩写（/测试 ds）。"""
         self.alias_map = {}
-        self.match_keywords = {}
 
-        aliases_config = self.config.get("platform_aliases", {}) or {}
-
+        # 平台 key 本身始终可用：中转站、ChatAnywhere 这类没有固定域名的平台只能靠它
         for platform_key in self.PLATFORMS:
-            # 平台名本身始终作为别名
             self.alias_map[platform_key.lower()] = platform_key
-            self.match_keywords[platform_key] = [platform_key.lower()]
 
-            # 读取用户配置的别名列表（同时用于命令匹配和 api_base 识别）
-            aliases_str = aliases_config.get(platform_key, "") if isinstance(aliases_config, dict) else ""
-            if isinstance(aliases_str, str) and aliases_str.strip():
-                for alias in aliases_str.split(","):
-                    alias = alias.strip().lower()
-                    if alias:
-                        self.alias_map[alias] = platform_key
-                        self.match_keywords[platform_key].append(alias)
+        for base, abbrs in self._iter_platform_name_entries():
+            platform_key = self._match_platform_by_api_base(base)
+            if not platform_key:
+                # 域名不属于任何内置平台（自建中转站等）：缩写仍可用于 /测试 指定网址
+                continue
+            for abbr in abbrs:
+                self.alias_map.setdefault(abbr.lower(), platform_key)
+
+        # 旧配置 platform_aliases 已并入 platform_names；仍读取一次，避免升级后用户的
+        # 自定义别名突然失效（写入顺序在后，不覆盖 platform_names 里显式配置的别名）
+        legacy = self.config.get("platform_aliases")
+        if isinstance(legacy, dict) and legacy:
+            for platform_key, val in legacy.items():
+                if platform_key not in self.PLATFORMS or not isinstance(val, str):
+                    continue
+                for abbr in val.split(","):
+                    abbr = abbr.strip().lower()
+                    if abbr:
+                        self.alias_map.setdefault(abbr, platform_key)
+            logger.info(
+                "[astrbot_plugin_llm_balance] ⚠️ 配置项 platform_aliases 已并入 platform_names，"
+                "建议把别名写到 platform_names 对应连接后面"
+            )
 
     def _match_platform_by_api_base(self, api_base: str) -> Optional[str]:
-        """根据 api_base 匹配平台 key，返回 None 表示未匹配"""
-        api_base_lower = api_base.lower()
-        for platform_key, keywords in self.match_keywords.items():
-            for kw in keywords:
-                if kw in api_base_lower:
+        """按域名判定 api_base 属于哪个内置平台；返回 None 表示未匹配。
+        用各 Fetcher 的域名规则精确匹配，避免 deepseek-proxy.com 这类中转站被子串误判。"""
+        if not api_base:
+            return None
+        for platform_key, fetcher_cls in self.FETCHER_MAP.items():
+            if platform_key == "newapi":
+                continue
+            try:
+                if fetcher_cls().match(api_base):
                     return platform_key
-        # 如果配置了 newapi_urls，检查是否匹配
+            except Exception:
+                continue
         for newapi_url in self.manager.newapi_urls:
-            if newapi_url.lower() in api_base_lower:
+            if newapi_url.lower() in api_base.lower():
                 return "newapi"
         return None
 
@@ -967,32 +986,36 @@ class BalancePlugin(Star):
             u = u.split("/v1")[0].rstrip("/")
         return u
 
-    def _build_platform_name_maps(self) -> tuple[dict, dict]:
-        """解析 platform_names（list 每项 `连接=缩写1,缩写2`，兼容 dict 嵌套结构），返回 (连接→显示缩写, 缩写→连接) 两映射；同连接多缩写时显示取第一个，缩写冲突先到者优先"""
-        display: dict = {}
-        abbr: dict = {}
+    def _iter_platform_name_entries(self) -> list[tuple[str, list[str]]]:
+        """解析 platform_names，返回 [(规范化连接, [缩写...]), ...]。
 
-        def add(base: str, val: str) -> None:
-            if not base or not val:
-                return
-            abbrs = [a.strip() for a in val.split(",") if a.strip()]
-            if not abbrs:
-                return
-            display.setdefault(base, abbrs[0])
-            for a in abbrs:
-                abbr.setdefault(a, base)
-
+        标准格式是 list 每项 `连接=缩写1,缩写2`；同时兼容历史 dict 结构（连接→缩写串），
+        避免升级后用户已配置的条目被静默丢弃。"""
+        entries: list[tuple[str, list[str]]] = []
         raw = self.config.get("platform_names") or {}
         if isinstance(raw, dict):
             for k, v in raw.items():
                 val = v if isinstance(v, str) else (v.get("default") if isinstance(v, dict) else None)
                 if isinstance(val, str) and val.strip():
-                    add(self._norm_base(str(k)), val)
+                    entries.append((self._norm_base(str(k)), [a.strip() for a in val.split(",") if a.strip()]))
         elif isinstance(raw, list):
             for item in raw:
                 if isinstance(item, str) and "=" in item:
                     k, v = item.split("=", 1)
-                    add(self._norm_base(k.strip()), v.strip())
+                    abbrs = [a.strip() for a in v.split(",") if a.strip()]
+                    if k.strip() and abbrs:
+                        entries.append((self._norm_base(k.strip()), abbrs))
+        return entries
+
+    def _build_platform_name_maps(self) -> tuple[dict, dict]:
+        """由 platform_names 生成 (连接→显示缩写, 缩写→连接) 两映射；
+        同连接多缩写时显示取第一个，缩写冲突先到者优先"""
+        display: dict = {}
+        abbr: dict = {}
+        for base, abbrs in self._iter_platform_name_entries():
+            display.setdefault(base, abbrs[0])
+            for a in abbrs:
+                abbr.setdefault(a, base)
         return display, abbr
 
     def _apply_platform_name_map(self, name: str) -> str:
@@ -1993,22 +2016,18 @@ class BalancePlugin(Star):
         return [info["display_name"] for info in self.PLATFORMS.values()]
 
     def _get_platform_aliases_text(self) -> str:
-        """生成平台简写列表文本，用于帮助和错误提示"""
-        aliases_config = self.config.get("platform_aliases", {}) or {}
+        """生成平台简写列表文本（别名来自 platform_names），用于帮助和错误提示"""
+        # 反向汇总：平台 -> 可用别名（平台 key 本身始终可用）
+        per_platform: dict = {k: [k] for k in self.PLATFORMS}
+        for alias, platform_key in self.alias_map.items():
+            bucket = per_platform.setdefault(platform_key, [])
+            if alias not in bucket:
+                bucket.append(alias)
+
         lines = []
         for platform_key, info in self.PLATFORMS.items():
-            default_aliases = [platform_key]
-            aliases_str = aliases_config.get(platform_key, "") if isinstance(aliases_config, dict) else ""
-            if isinstance(aliases_str, str) and aliases_str.strip():
-                default_aliases.extend([a.strip() for a in aliases_str.split(",") if a.strip()])
-            # 去重保持顺序
-            seen = set()
-            unique_aliases = []
-            for a in default_aliases:
-                if a.lower() not in seen:
-                    seen.add(a.lower())
-                    unique_aliases.append(a)
-            lines.append(f"  {' / '.join(unique_aliases)} -> {info['display_name']}")
+            aliases = per_platform.get(platform_key, [platform_key])
+            lines.append(f"  {' / '.join(aliases)} -> {info['display_name']}")
         return "**支持的平台简写:**\n" + "\n".join(lines)
 
     def _get_help_text(self) -> str:
@@ -2018,19 +2037,17 @@ class BalancePlugin(Star):
             self._header("余额查询插件")
             + self._sep()
             + "**使用方法:**\n"
-            + "  /余额 当前 - 查询当前会话使用的模型余额\n"
-            + "  /余额 所有 - 查询所有已配置模型的余额\n"
-            + "  /余额 <平台简写> - 查询指定平台余额（配置中的或自带站点）\n"
-            + "  /余额 <平台简写> <key1> [key2]... - 批量查询自带平台的多个密钥余额\n"
-            + "  /余额 <API端口> <key1> [key2]... - 查询自定义 API 端点的余额（域名命中专用平台时走专用接口，否则按 OpenAI Billing / New API 通用探测）\n"
-            + "  /余额 <NewAPI连接信息JSON> [key2]... - 粘贴连接信息直接查询余额，JSON 之后可继续追加更多密钥\n"
-            + "  /测试 <API网址> <key1> [key2]... [模型名] - 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用，可指定模型）\n"
-            + "  /测试 <NewAPI连接信息JSON> [模型名] - 粘贴 NewAPI 复制连接信息，自动取其中的网址与密钥实测模型\n"
-            + "  密钥不要求 sk- 前缀，支持自定义/小众平台密钥；含特殊字符或较短的密钥可用 key: 前缀强制指定\n"
-            + "  /测试 中密钥与模型名歧义时，可用 key: / model: 前缀明确指定\n"
-            + "  引用一条含网址与密钥的消息后只发 /余额（或 /测试），即查询或测试这条被引用的内容\n"
-            + "  英文别名：/余额 = /balance，/测试 = /test\n"
-            + "  子命令英文别名：当前 = current，所有 = all，帮助 = help\n"
+            + "  /余额 当前 | /余额 所有 - 查当前会话 / 全部已配置模型的余额\n"
+            + "  /余额 <平台简写> - 查指定平台余额（用你在 AstrBot 里配置的 provider）\n"
+            + "  /余额 <平台简写> <key1> [key2]... - 用指定密钥批量查该平台余额\n"
+            + "  /余额 <API网址> <key1> [key2]... - 查任意端点的余额（内置平台走专用接口，否则自动探测 Billing / New API）\n"
+            + "  /测试 <平台简写> <key1> [key2]... [模型名] - 测该平台模型可用性\n"
+            + "  /测试 <API网址> <key1> [key2]... [模型名] - 测任意 OpenAI 兼容端点（列出模型并实测调用）\n"
+            + "  /余额|/测试 <NewAPI连接信息JSON> [...] - 粘贴连接信息，自动取其中的网址与密钥\n"
+            + "  两条命令共用同一套平台简写（配置项 platform_names 可自定义），<平台简写> 也可直接写完整网址\n"
+            + "  密钥不要求 sk- 前缀；含特殊字符、过短或与模型名歧义时可用 key: / model: 前缀强制指定\n"
+            + "  引用一条含网址与密钥的消息后只发 /余额（或 /测试），即处理这条被引用的内容\n"
+            + "  英文别名：/余额 = /balance，/测试 = /test；子命令：当前 = current，所有 = all，帮助 = help\n"
             + "\n"
             + "**支持的平台:**\n"
             + f"  {platforms}\n"

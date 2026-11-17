@@ -23,32 +23,33 @@
 
 ## 使用方法
 
+两条命令接受相同的参数形式，`<平台简写>` 与 `<API网址>` 可互换使用：
+
 ```
 /余额                               # 显示帮助
-/余额 当前                          # 查询当前会话使用的模型余额
-/余额 所有                          # 查询所有已配置模型的余额
-/余额 <平台简写>                     # 查询指定 AstrBot 配置平台的余额
-/余额 <平台简写> <key1> [key2]...   # 批量查询指定平台的多个密钥余额
-/余额 <API端口> <key1> [key2]...   # 查询自定义 API 端点的余额（命中内置平台走专用接口，否则自动探测 OpenAI Billing / New API）
-/余额 <JSON配置> [key2]...          # 直接粘贴 NewAPI 复制连接信息查询余额，可继续追加更多密钥
-/测试 <API网址> <key1> [key2]... # 测试 OpenAI 兼容端点的模型可用性
-/测试 <平台简写> <key1> [key2]... # 用平台简写测试（与 /余额 同名，如 ds、kimi）
+/余额 当前 | /余额 所有              # 查当前会话 / 全部已配置模型的余额
+/余额 <平台简写>                     # 查指定平台余额（用你在 AstrBot 里配置的 provider）
+/余额 <平台简写> <key1> [key2]...   # 用指定密钥批量查该平台余额
+/余额 <API网址> <key1> [key2]...   # 查任意端点的余额（内置平台走专用接口，否则自动探测 Billing / New API）
+/测试 <平台简写> <key1> [key2]... [模型名]  # 测该平台的模型可用性
+/测试 <API网址> <key1> [key2]... [模型名]   # 测任意 OpenAI 兼容端点
+/余额|/测试 <JSON配置> [...]        # 粘贴 NewAPI 复制连接信息，自动取其中的网址与密钥
 ```
 
 英文别名：`/余额` = `/balance`，`/测试` = `/test`；子命令：当前 = current，所有 = all，帮助 = help。
 
 ## 支持的平台
 
-| 平台 | 别名 |
+| 平台 | 可用简写 |
 |---|---|
 | DeepSeek（深度求索） | `deepseek` / `ds` / `深度求索` |
-| 硅基流动 | `siliconflow` / `siliconcloud` / `sc` / `硅基` / `硅基流动` |
-| Moonshot（Kimi） | `moonshot.cn` / `moonshot` / `kimi` / `月之暗面` |
-| OpenAI | `openai.com` / `openai` / `gpt` / `chatgpt` |
-| ChatAnywhere | `chatanywhere` / `ca` |
-| NEW API | `newapi` / `中转` / `new` |
+| 硅基流动 | `siliconflow` / `sc` / `硅基` / `硅基流动` / `sc-cn` / `硅基cn` |
+| Moonshot（Kimi） | `moonshot` / `kimi` / `月之暗面` |
+| OpenAI | `openai` / `gpt` / `chatgpt` |
+| ChatAnywhere | `chatanywhere` |
+| NEW API | `newapi` |
 
-别名可在插件配置中自定义。
+简写来自配置项 `platform_names`，`/余额` 与 `/测试` 共用同一份配置，可自由增删改。没有固定域名的平台（ChatAnywhere、NEW API）只能用它自己的平台名。
 
 ## 配置项
 
@@ -62,8 +63,7 @@
 | `openai_admin_key` | string | 空 | OpenAI 官方 Admin Key（`sk-admin-` 开头，可选）：填写后查询 OpenAI 官方端点会显示**本月累计花费**（官方无余额接口，此项为花费而非剩余额度） |
 | `request_timeout` | float | `10.0` | 请求超时（秒） |
 | `show_unsupported` | bool | `true` | `/余额 所有` 中显示未适配平台 |
-| `platform_aliases` | object | — | 各平台别名，逗号分隔 |
-| `platform_names` | list | 预置 5 条常用平台 | API 连接缩写映射：每项 `API连接地址=缩写1,缩写2`（一个连接可配多个缩写，逗号分隔，可添加多行）；输出中的连接地址自动替换为第一个缩写，`/余额` 与 `/测试` 的网址参数可用任一缩写代替。默认预置 DeepSeek / 硅基流动 / Moonshot / OpenAI 的地址，可自由修改或删除 |
+| `platform_names` | list | 预置 5 条常用平台 | API 连接与平台简写映射：每项 `API连接地址=缩写1,缩写2`（一个连接可配多个缩写，逗号分隔，可添加多行）。缩写同时用于 `/余额 <简写>` 与 `/测试 <简写>`，输出中的连接地址也会替换为第一个缩写。默认预置 DeepSeek / 硅基流动 / Moonshot / OpenAI，地址与缩写都可自由修改或删除 |
 
 ### 输出模板
 
@@ -118,15 +118,43 @@
 
 成功/失败/未适配区块之间。默认值：`════════════════════════════════════════`
 
-## 自定义 API 端点查询
+## 平台简写与自定义端点
 
-支持查询未在预置列表中的 API 中转站余额。命令以 `http://` 或 `https://` 开头时自动进入自定义端点模式：
+`/余额` 与 `/测试` 共用同一套参数：`<平台简写>` 或 `<API网址>` 二选一，后面跟密钥（`/测试` 末尾还可加模型名）。
+
+### 用平台简写
+
+```
+/余额 ds sk-xxxx        # 查 DeepSeek 余额
+/测试 ds sk-xxxx        # 测 DeepSeek 模型可用性
+/测试 kimi sk-xxxx      # Moonshot
+/测试 openai sk-xxxx    # OpenAI 官方
+```
+
+简写来自配置项 `platform_names`，已预置常用平台，**地址与缩写都能自由修改或删除**：
+
+```
+https://api.deepseek.com=ds,deepseek,深度求索
+https://api.siliconflow.com=sc,硅基,硅基流动
+https://api.siliconflow.cn=sc-cn,硅基cn
+https://api.moonshot.cn=kimi,moonshot,月之暗面
+https://api.openai.com=openai,gpt,chatgpt
+```
+
+想测自己的中转站，把地址换掉即可，例如 `https://my-relay.com=ds`，之后 `/测试 ds sk-xxx` 就测这个中转站。删掉某一行后，该缩写不再可用（`/余额` 仍可用平台名如 `deepseek` 查询已配置的 provider）。
+
+> 注意：`/余额 <简写>` 优先查你在 AstrBot 里为该平台配置的 provider（走中转站就查中转站）；只有写完整网址时才按网址查询。
+
+### 用完整网址
+
+命令以 `http://` 或 `https://` 开头时进入自定义端点模式：
 
 ```
 /余额 https://your-api.com/v1 sk-xxxx1 sk-xxxx2
+/测试 https://your-api.com/v1 sk-xxxx1 sk-xxxx2 deepseek-chat
 ```
 
-查询流程自动选路：
+`/余额` 的查询流程自动选路：
 1. 网址属于内置平台（如 `api.deepseek.com`）时，**走该平台的专用余额接口**
 2. 不完全属于内置平台时，**先**尝试 OpenAI Billing 兼容接口（`/v1/dashboard/billing/subscription` + `/usage`，由中转站实现），**再**降级 New API 格式（`/api/usage/token`）
 3. 两种通用接口都探测不到，才提示该端点不支持余额查询
@@ -152,36 +180,20 @@ OpenAI 官方**不提供**查询账户剩余余额的接口，但它提供用量
 
 请注意这是**花费**而不是**余额**：OpenAI 采用预付额度制，`/organization/costs` 只返回已消耗金额，剩余额度仍需到 OpenAI 后台查看。未填写 `openai_admin_key` 时，查询官方端点会提示查不到余额并说明原因。
 
-## 测试模型可用性
+## 测试流程
 
-使用 `/测试` 命令测试任意 OpenAI 兼容端点的模型是否可用。命令格式与自定义端点余额查询一致：`指令 + 网址 + API Key`，末尾可**指定模型名**。
+`/测试` 会先拉取模型列表再实测调用，用来确认密钥是否有效、模型是否真能跑通：
+
+1. 请求 `/v1/models` 拉取可用模型列表（同时验证 API Key 是否有效）
+2. **未指定模型名**：自动挑选聊天/生成类模型，**最多实测前 3 个**（遇失败即停），实测调用 `/v1/chat/completions`（`max_tokens=1`）
+3. **指定模型名**（最后一个非密钥参数）：直接实测该模型；即使它不在模型列表中、甚至 `/v1/models` 接口不可用也会硬测
+4. 返回连接状态、响应延迟、可用模型列表和实测结果
 
 ```
 /测试 https://api.example.com/v1 sk-xxxx
 /测试 https://api.example.com sk-xxxx1 sk-xxxx2
 /测试 https://api.example.com sk-xxxx deepseek-chat
-/测试 https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
 ```
-
-也可以直接用**平台简写**，不必再写完整网址：
-
-```
-/测试 ds sk-xxxx        # 等价于 /测试 https://api.deepseek.com sk-xxxx
-/测试 kimi sk-xxxx      # Moonshot
-/测试 openai sk-xxxx    # OpenAI 官方
-```
-
-这些简写来自配置项 `platform_names`，已预置常用平台的地址，**地址与缩写都能自由修改或删除**：
-
-```
-https://api.deepseek.com=ds,deepseek,深度求索
-https://api.siliconflow.com=sc,硅基,硅基流动
-https://api.siliconflow.cn=sc-cn,硅基cn
-https://api.moonshot.cn=kimi,moonshot,月之暗面
-https://api.openai.com=openai,gpt,chatgpt
-```
-
-想测自己的中转站，把地址换掉即可，例如 `https://my-relay.com=ds`，之后 `/测试 ds sk-xxx` 就测这个中转站。删掉某一行后，该缩写不再可用（`/余额` 仍可用平台别名查询）。
 
 网址和密钥的**先后顺序不限**，从面板里分几行复制也可以（换行当空格用）：
 
@@ -214,12 +226,6 @@ deepseek-chat
 /测试
 /测试 deepseek-chat
 ```
-
-测试流程：
-1. 请求 `/v1/models` 拉取可用模型列表（同时验证 API Key 是否有效）
-2. **未指定模型名**：自动挑选聊天/生成类模型，**最多实测前 3 个**（遇失败即停），实测调用 `/v1/chat/completions`（`max_tokens=1`）
-3. **指定模型名**（最后一个非密钥参数）：直接实测该模型；即使它不在模型列表中、甚至 `/v1/models` 接口不可用也会硬测
-4. 返回连接状态、响应延迟、可用模型列表和实测结果
 
 输出示例：
 
