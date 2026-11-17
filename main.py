@@ -250,8 +250,10 @@ class BaseBalanceFetcher(ABC):
 
 # ==================== 各平台 Fetcher ====================
 
-# 余额接口探测：OpenAI Billing 系与 New API 系是全行业仅有的两种可被 API Key 打通的
+# 余额接口探测：OpenAI Billing 系与 New API 系是当前仅有的两种可被 API Key 打通的
 # 余额形态，专用平台适配之外统一靠这两个探测兜底（NewAPI 中转站、OneAPI、自建网关等都覆盖在内）。
+# 注意 Billing 系（/v1/dashboard/billing/*）并非 OpenAI 官方接口——它是 New API / One API
+# 等中转站为兼容旧面板自行实现的；官方域名不存在该接口，命中官方域名时必然探测失败。
 
 def _as_float(value, default: float = 0.0) -> float:
     """把上游返回的数值字段转成 float；非数值时回落到默认值"""
@@ -363,16 +365,18 @@ async def _probe_billing(session: aiohttp.ClientSession, api_key: str, base_url:
 
 def _billing_unavailable_reason(diagnostics: dict | None) -> str:
     """把 Billing 探测的最后一步状态翻译成用户能照着处理的说明。
-    401/403 既可能是官方已收紧该接口，也可能是密钥本身无效，两者都写出来避免误导。"""
+    该接口由中转站（New API / One API）实现，OpenAI 官方从未提供，因此官方域名必然查不到；
+    401/403 还要考虑密钥本身无效，两种可能都写出来避免误导。"""
     status = (diagnostics or {}).get("status")
     if status in (401, 403):
-        return (f"该接口返回 HTTP {status}：可能是 OpenAI 已限制用 API Key 读取余额，"
-                f"也可能是密钥无效，请到 OpenAI 后台查看用量与余额")
+        return (f"该接口返回 HTTP {status}：可能是密钥无效，"
+                f"也可能是该端点未实现余额接口（官方 OpenAI 不提供，仅中转站提供）")
     if status == 404:
-        return "OpenAI 官方已下线该余额接口（HTTP 404），请到 OpenAI 后台查看用量与余额"
+        return ("OpenAI 官方不提供余额查询接口（HTTP 404，该接口由 New API / One API 等中转站实现），"
+                "官方账户请到 OpenAI 后台查看用量与余额")
     if status is None:
         return "连接 OpenAI 失败，请检查网络或代理设置"
-    return f"余额接口返回 HTTP {status}"
+    return f"余额接口返回 HTTP {status}（该接口由中转站实现，官方 OpenAI 不提供）"
 
 
 async def _probe_newapi_usage(session: aiohttp.ClientSession, api_key: str,
@@ -631,8 +635,8 @@ class OpenAIFetcher(BaseBalanceFetcher):
                                       diagnostics=diagnostics)
         if result is not None:
             return result
-        # OpenAI 官方账号本身不设余额，且官方已收紧该接口：把「为什么查不到」写清楚，
-        # 否则用户只会看到一句「API不支持」而不知道是官方限制还是密钥/网络问题
+        # 该余额接口是 New API / One API 等中转站为兼容旧面板而实现的，OpenAI 官方从未提供：
+        # 官方域名查不到是必然结果，要把「为什么查不到」写清楚，别让人误以为是密钥或插件坏了
         return BalanceResult(
             "OpenAI", "Unknown", "0",
             error=f"{UNSUPPORTED_BALANCE_HINT} ({_billing_unavailable_reason(diagnostics)})",

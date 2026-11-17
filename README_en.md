@@ -126,10 +126,12 @@ Supports querying the balance of API relay sites not in the preset list. When th
 
 The endpoint is routed as follows:
 1. A URL that belongs to a built-in platform (e.g. `api.deepseek.com`) uses **that platform's dedicated balance API**
-2. Anything else **first** tries the OpenAI Billing API (`/v1/dashboard/billing/subscription` + `/usage`), **then** falls back to the New API format (`/api/usage/token`)
+2. Anything else **first** tries the OpenAI Billing-compatible API (`/v1/dashboard/billing/subscription` + `/usage`, implemented by relay sites), **then** falls back to the New API format (`/api/usage/token`)
 3. Only when both generic interfaces fail does the plugin report the endpoint as unsupported
 
 That means one-api, new-api, AIProxy and similar relay sites work right away without waiting for a plugin update. An account whose balance is `0` is reported as `0`, not as unsupported.
+
+> Note: the Billing-compatible API is implemented by **relay sites** (New API / One API) to stay compatible with the legacy OpenAI dashboard. The official OpenAI domain does not expose it, so pointing the plugin at the official endpoint always reports no balance — that is not a plugin failure. Use the OpenAI dashboard to check usage and balance for official accounts.
 
 ## Testing Model Availability
 
@@ -239,7 +241,7 @@ The plugin matches each URL to its corresponding provider key and queries them s
 ## FAQ
 
 **The official OpenAI endpoint reports "unable to get balance info" — is the plugin broken?**
-No. OpenAI does not publish an API for reading account balance with an API key (the endpoint is not part of the official OpenAPI specification), so no tool can retrieve it. Check your balance and usage in the OpenAI dashboard (Billing page). The plugin now includes the returned status in the message, so you can tell an official restriction from an invalid key or a network problem.
+No. The balance API this plugin uses (`/v1/dashboard/billing/*`) is implemented by **relay sites such as New API / One API** for compatibility with the legacy OpenAI dashboard; OpenAI has never provided it, so it can never work against the official domain — no tool can retrieve it there. For official accounts, check balance and usage in the OpenAI dashboard (Billing page); relay sites are unaffected and keep working. The plugin now includes the returned status in the message, so you can tell "this endpoint has no such API" apart from an invalid key.
 
 **I get no balance and want to see which URLs the plugin actually called.**
 Set the AstrBot log level to `DEBUG` and run the query again. Log lines tagged `🔍 余额探测` show each probe endpoint and its response status, and `🔀 余额选路` shows which fetcher the site finally used — enough to tell an unsupported balance API apart from a key or network problem.
