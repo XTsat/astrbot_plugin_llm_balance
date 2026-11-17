@@ -7,33 +7,26 @@
 
 ## 功能
 
-- 查询当前会话使用的模型余额
-- 查询所有已配置模型的余额（自动去重，并发查询）
-- 按平台简写查询指定平台余额（支持多密钥）
-- 命令后直接传 API Key 查询（无需在 AstrBot 中配置）
-- 批量查询多个 API Key（自动识别令牌，不要求 `sk-` 前缀，可用 `key:` 强制指定）
-- 自定义 API 端点余额查询（未适配的平台自动按 OpenAI Billing / New API 两种通用接口探测，都查不到才提示不支持）
-- 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用）
-- 直接粘贴 NewAPI 连接信息 JSON（`/余额` 查余额、`/测试` 实测模型），无需手动拆出网址和密钥；JSON 之后还能继续追加更多密钥
-- 引用一条含网址与密钥的消息，只发 `/余额` 或 `/测试` 即可处理被引用的内容
-- 可自定义平台别名（用于命令匹配和 Provider 自动识别）
+- 查询当前会话使用的模型余额，或一次性查询所有已配置模型的余额（自动去重、并发查询）
+- 按平台简写查询指定平台余额，支持一次传多个密钥批量查询（不要求 `sk-` 前缀，可用 `key:` 强制指定）
+- 查询任意 API 端点的余额：内置平台走专用接口，未适配平台自动按 OpenAI Billing / New API 两种通用接口探测，都查不到才提示不支持
+- 测试 OpenAI 兼容端点的模型可用性（列出模型并实测调用，可一次测多个密钥、指定模型）
+- 粘贴 NewAPI 连接信息 JSON 或引用一条含网址与密钥的消息，即可直接查询/测试，无需手动拆分
+- 自定义平台别名（同时用于命令匹配与端点地址），可自由增删改
+- 完全可自定义的输出模板（成功/失败/标题/分隔符），支持中英文输出
 - 管理员权限控制
-- 完全可自定义的输出模板（成功/失败/标题/分隔符）
-- NEW API 多实例支持（多个中转站）
 
 ## 使用方法
 
-两条命令接受相同的参数形式，`<平台简写>` 与 `<API网址>` 可互换使用：
+两条命令接受相同的参数：`<平台简写>` 或 `<API网址>` 二选一，后跟密钥（`/测试` 末尾还可加模型名）。
 
 ```
 /余额                               # 显示帮助
 /余额 当前 | /余额 所有              # 查当前会话 / 全部已配置模型的余额
 /余额 <平台简写>                     # 查指定平台余额（用你在 AstrBot 里配置的 provider）
-/余额 <平台简写> <key1> [key2]...   # 用指定密钥批量查该平台余额
-/余额 <API网址> <key1> [key2]...   # 查任意端点的余额（内置平台走专用接口，否则自动探测 Billing / New API）
-/测试 <平台简写> <key1> [key2]... [模型名]  # 测该平台的模型可用性
-/测试 <API网址> <key1> [key2]... [模型名]   # 测任意 OpenAI 兼容端点
-/余额|/测试 <JSON配置> [...]        # 粘贴 NewAPI 复制连接信息，自动取其中的网址与密钥
+/余额 <平台简写|API网址> <key1> [key2]...  # 用指定密钥批量查余额
+/测试 <平台简写|API网址> <key1> [key2]... [模型名]  # 实测模型可用性
+/余额|/测试 <NewAPI连接信息JSON> [...]  # 粘贴连接信息，自动取其中的网址与密钥
 ```
 
 英文别名：`/余额` = `/balance`，`/测试` = `/test`；子命令：当前 = current，所有 = all，帮助 = help。
@@ -59,7 +52,7 @@
 |---|---|---|---|
 | `admin_only` | bool | `false` | 仅管理员可用 |
 | `output_language` | string | `auto` | 输出语言：`auto`（按指令语言自动切换）/ `zh`（强制中文）/ `en`（强制英文） |
-| `newapi_base_url` | text | 空 | NEW API 中转站地址，每行一个 |
+| `newapi_base_url` | text | 空 | NEW API 中转站地址，每行一个；多个实例时用于 `/余额 newapi` 聚合查询 |
 | `openai_admin_key` | string | 空 | OpenAI 官方 Admin Key（`sk-admin-` 开头，可选）：填写后查询 OpenAI 官方端点会显示**本月累计花费**（官方无余额接口，此项为花费而非剩余额度） |
 | `request_timeout` | float | `10.0` | 请求超时（秒） |
 | `show_unsupported` | bool | `true` | `/余额 所有` 中显示未适配平台 |
@@ -83,9 +76,11 @@
 | `{{smart_balance}}` | 智能附加信息（自动隐藏无意义行） | 成功 |
 | `{{?变量}}` | 条件变量，值为空或 `0` 时隐藏整行 | 成功 |
 
-#### success_template — 成功查询
+<details>
+<summary>各模板的默认值（7 项）</summary>
 
-默认值：
+**成功模板（`success_template`）**
+
 ```
 🟢 **{{source_name}}**
   🔑 密钥: {{api_key}}
@@ -93,94 +88,50 @@
 {{smart_balance}}
 ```
 
-#### error_template — 失败查询
+**失败模板（`error_template`）**
 
-默认值：
 ```
 🔴 **{{source_name}}**
   🔑 密钥: {{api_key}}
   ❌ {{error}}
 ```
 
-#### header_template — 标题
+- 标题模板（`header_template`）：`💰 **{{title}}**`（变量：`{{title}}`）
+- 标题分隔符（`separator_template`）：`════════════════════════════════════════`（标题与内容之间）
+- 项间分隔符（`item_separator_template`）：空（同区块内多条结果之间，留空则为空行）
+- 区块分隔符（`section_separator_template`）：`════════════════════════════════════════`（成功/失败/未适配区块之间）
 
-默认值：`💰 **{{title}}**` （变量：`{{title}}`）
+</details>
 
-#### separator_template — 标题分隔符
+## 用法示例
 
-标题与内容之间。默认值：`════════════════════════════════════════`
-
-#### item_separator_template — 项间分隔符
-
-同区块内多条结果之间，留空则为空行。默认值：空
-
-#### section_separator_template — 区块分隔符
-
-成功/失败/未适配区块之间。默认值：`════════════════════════════════════════`
-
-## 平台简写与自定义端点
-
-`/余额` 与 `/测试` 共用同一套参数：`<平台简写>` 或 `<API网址>` 二选一，后面跟密钥（`/测试` 末尾还可加模型名）。
-
-### 用平台简写
+### 平台简写与自定义端点
 
 ```
 /余额 ds sk-xxxx        # 查 DeepSeek 余额
 /测试 ds sk-xxxx        # 测 DeepSeek 模型可用性
 /测试 kimi sk-xxxx      # Moonshot
 /测试 openai sk-xxxx    # OpenAI 官方
-```
-
-简写来自配置项 `platform_names`，已预置常用平台，**地址与缩写都能自由修改或删除**：
-
-```
-https://api.deepseek.com=ds,deepseek,深度求索
-https://api.siliconflow.com=sc,硅基,硅基流动
-https://api.siliconflow.cn=sc-cn,硅基cn
-https://api.moonshot.cn=kimi,moonshot,月之暗面
-https://api.openai.com=openai,gpt,chatgpt
-```
-
-想测自己的中转站，把地址换掉即可，例如 `https://my-relay.com=ds`，之后 `/测试 ds sk-xxx` 就测这个中转站。删掉某一行后，该缩写不再可用（`/余额` 仍可用平台名如 `deepseek` 查询已配置的 provider）。
-
-> 注意：`/余额 <简写>` 优先查你在 AstrBot 里为该平台配置的 provider（走中转站就查中转站）；只有写完整网址时才按网址查询。
-
-### 用完整网址
-
-命令以 `http://` 或 `https://` 开头时进入自定义端点模式：
-
-```
 /余额 https://your-api.com/v1 sk-xxxx1 sk-xxxx2
 /测试 https://your-api.com/v1 sk-xxxx1 sk-xxxx2 deepseek-chat
 ```
 
-`/余额` 的查询流程自动选路：
-1. 网址属于内置平台（如 `api.deepseek.com`）时，**走该平台的专用余额接口**
-2. 不完全属于内置平台时，**先**尝试 OpenAI Billing 兼容接口（`/v1/dashboard/billing/subscription` + `/usage`，由中转站实现），**再**降级 New API 格式（`/api/usage/token`）
-3. 两种通用接口都探测不到，才提示该端点不支持余额查询
+想测自己的中转站，把 `platform_names` 里对应行的地址换掉即可，例如 `https://my-relay.com=ds`，之后 `/测试 ds sk-xxx` 就测这个中转站。删掉某一行后，该缩写不再可用（`/余额` 仍可用平台名如 `deepseek` 查询已配置的 provider）。
 
-因此 one-api、new-api、AIProxy 等各类中转站无需等插件适配，直接按上面的方式传网址和密钥即可。余额为 0 的账户会正常显示 `0`，不会误报成「不支持」。
+> 注意：`/余额 <简写>` 优先查你在 AstrBot 里为该平台配置的 provider（走中转站就查中转站）；只有写完整网址时才按网址查询。
 
-> 说明：Billing 兼容接口是**中转站**为兼容旧版 OpenAI 面板而实现的，OpenAI 官方域名并没有这个接口。因此把 OpenAI 官方端点配进插件时必然提示查不到余额，这不是插件故障；官方账户请到 OpenAI 后台查看用量与余额。
+### 批量查询
 
-## 查询 OpenAI 官方花费
-
-OpenAI 官方**不提供**查询账户剩余余额的接口，但它提供用量与花费统计（`/organization/costs`、`/organization/usage/*`）。这类接口只接受 **Admin Key**，普通项目密钥会返回 403。
-
-在插件配置里填写 `openai_admin_key`（`sk-admin-` 开头，在 OpenAI 后台 Organization → Admin API Keys 创建）后，查询 OpenAI 官方端点会显示**本月累计花费**：
+在平台简写或 API 端点后跟多个密钥，自动识别并并发查询，结果按成功/失败分组展示：
 
 ```
-💰 **当前余额查询**
-════════════════════════════════════════
-🟢 **OpenAI 官方花费**
-  🔑 密钥: sk-adm********************abc
-  💵 1.23 USD
-  📝 2026-11-01 起累计花费 | 官方不提供余额接口，此处为花费统计而非剩余额度
+/余额 ds sk-xxx1 sk-xxx2 sk-xxx3
+/余额 https://api.example.com/v1 sk-xxx1 sk-xxx2
 ```
 
-请注意这是**花费**而不是**余额**：OpenAI 采用预付额度制，`/organization/costs` 只返回已消耗金额，剩余额度仍需到 OpenAI 后台查看。未填写 `openai_admin_key` 时，查询官方端点会提示查不到余额并说明原因。
+含特殊字符或过短的密钥写成 `key:<密钥>` 强制指定；网址与密钥顺序不限，从面板分几行复制也可以（换行当空格用）。
 
-## 测试流程
+### 测试流程
 
 `/测试` 会先拉取模型列表再实测调用，用来确认密钥是否有效、模型是否真能跑通：
 
@@ -193,39 +144,11 @@ OpenAI 官方**不提供**查询账户剩余余额的接口，但它提供用量
 /测试 https://api.example.com/v1 sk-xxxx
 /测试 https://api.example.com sk-xxxx1 sk-xxxx2
 /测试 https://api.example.com sk-xxxx deepseek-chat
-```
-
-网址和密钥的**先后顺序不限**，从面板里分几行复制也可以（换行当空格用）：
-
-```
-/测试 sk-xxxx https://api.example.com deepseek-chat
-/测试 sk-xxxx
-https://api.example.com
-deepseek-chat
-```
-
-密钥不要求 `sk-` 前缀：自建网关、小众平台的自定义密钥可直接传入。含特殊字符、过短或与模型名互相误判的密钥，用 `key:`（或 `密钥:`）前缀强制指定；`/测试` 中模型名则用 `model:`（或 `模型:`）前缀。前缀后的内容按原样使用，不再做格式判断：
-
-```
 /测试 https://api.example.com/v1 key:my-custom-key
 /测试 https://api.example.com key:my-custom-key model:my-finetune-v3
-/余额 https://api.example.com/v1 key:abc!@#def
 ```
 
-也可以直接把 NewAPI 面板复制的连接信息（含 `key` 与 `url` 的 JSON）粘在 `/测试` 后面，插件自动取其中的网址和密钥，末尾仍可加模型名：
-
-```
-/测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"}
-/测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://api.example.com"} deepseek-chat
-```
-
-群里已经有人发过一条带站点和密钥的消息（文本或 NewAPI JSON 都行）时，**引用那条消息、只发 `/测试`** 就能直接测它，不用再复制一遍；引用后还想指定模型，追加 `模型名` 即可：
-
-```
-（引用一条含 sk-xxx 与 https://api.example.com 的消息）
-/测试
-/测试 deepseek-chat
-```
+密钥不要求 `sk-` 前缀：自建网关、小众平台的自定义密钥可直接传入。含特殊字符、过短或与模型名互相误判的密钥，用 `key:`（或 `密钥:`）前缀强制指定；`/测试` 中模型名则用 `model:`（或 `模型:`）前缀。前缀后的内容按原样使用，不再做格式判断。
 
 输出示例：
 
@@ -239,49 +162,41 @@ deepseek-chat
   🎯 测试模型: deepseek-chat ✅ 可用
 ```
 
-支持多个密钥并发测试，结果按成功/失败分组展示。
-
-## 批量查询
-
-在平台简写或 API 端点后跟多个密钥（不要求 `sk-` 前缀），自动识别并并发查询；含特殊字符或过短的密钥写成 `key:<密钥>`：
-
-```
-/余额 ds sk-xxx1 sk-xxx2 sk-xxx3
-/余额 https://api.example.com/v1 sk-xxx1 sk-xxx2
-```
-
-查询结果按成功/失败分组展示。
-
-## 粘贴 NewAPI 连接信息
+### 粘贴 NewAPI 连接信息与引用消息
 
 在 NewAPI 面板中复制连接信息后，直接粘到 `/余额` 或 `/测试` 后面即可，插件自动取 JSON 里的 `key` 和 `url`，不用手动拆开：
 
 ```
 /余额 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
-/余额 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} sk-yyy
-/测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"}
 /测试 {"_type":"newapi_channel_conn","key":"sk-xxx","url":"https://new.xinjianya.top"} deepseek-chat
 ```
 
 `/余额` 自动挑该站支持的余额接口（Billing 或 New API 格式），JSON 之后还能继续追加更多密钥一起查；`/测试` 照常拉取模型列表并实测调用，末尾可再跟模型名。
 
-群里已经有人发过一条带站点和密钥的消息（文本或 NewAPI JSON 都行）时，也可以**引用那条消息、只发 `/余额`**，直接查被引用的内容：
+群里已经有人发过一条带站点和密钥的消息（文本或 NewAPI JSON 都行）时，也可以**引用那条消息、只发 `/余额`（或 `/测试`）**，直接处理被引用的内容：
 
 ```
 （引用一条含 sk-xxx 与 https://api.example.com 的消息）
 /余额
+/测试 deepseek-chat        # 引用后仍可追加模型名
 ```
 
-## NEW API 多实例
+### NEW API 多实例
 
-在 `newapi_base_url` 中每行一个地址：
+想一次查看所有 NEW API 实例的余额，在 `newapi_base_url` 中每行一个地址（也可直接用 `/余额 <地址> <key>` 或别名逐个查询）：
 
 ```
 http://192.168.1.1:3000
 http://192.168.1.2:3000
 ```
 
-插件为每个地址匹配对应 Provider 的密钥并分别查询。
+配置后发 `/余额 newapi`，插件为每个地址匹配对应 Provider 的密钥并分别查询。
+
+### 查询 OpenAI 官方花费
+
+OpenAI 官方**不提供**查询账户剩余余额的接口，但它提供用量与花费统计。这类接口只接受 **Admin Key**，普通项目密钥会返回 403。
+
+在插件配置里填写 `openai_admin_key`（`sk-admin-` 开头，在 OpenAI 后台 Organization → Admin API Keys 创建）后，查询 OpenAI 官方端点会显示**本月累计花费**。请注意这是**花费**而不是**余额**：OpenAI 采用预付额度制，剩余额度仍需到 OpenAI 后台查看。未填写 `openai_admin_key` 时，查询官方端点会提示查不到余额并说明原因。
 
 ## 常见问题
 
