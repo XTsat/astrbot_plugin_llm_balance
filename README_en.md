@@ -1,4 +1,5 @@
 <div align="center">
+<img src="logo.png" alt="LLM Balance" width="160" />
 <h1>LLM Balance</h1>
 <p><strong>Query balances across major LLM platforms with batch token support and custom relay sites, and test model availability on OpenAI-compatible endpoints</strong></p>
 <p><sub>balance &nbsp;&nbsp; multi-platform &nbsp;&nbsp; model testing</sub></p>
@@ -16,94 +17,23 @@
 - Fully customizable output templates (success/failure/title/separators), Chinese or English output
 - Admin permission control
 
-## Usage
+## Commands
 
-Both commands accept the same arguments: either a `<platform alias>` or an `<API endpoint>`, followed by keys (plus an optional model name for `/test`).
+`/balance` and `/test` accept the same arguments: either a `<platform alias>` or an `<API endpoint>`, followed by keys (plus an optional model name for `/test`).
 
-```
-/balance                            # show help
-/balance current | /balance all     # balance of the current session / all configured models
-/balance <platform alias>           # balance via the provider configured for that platform in AstrBot
-/balance <alias|endpoint> <key1> [key2]...   # batch-query balance with given keys
-/test <alias|endpoint> <key1> [key2]... [model]  # test model availability
-/balance|/test <NewAPI connection JSON> [...]  # paste connection info; URL and key are picked up automatically
-```
-
-English aliases: `/余额` = `/balance`, `/测试` = `/test`; subcommands: current / all / help (also 当前 / 所有 / 帮助).
-
-## Supported Platforms
-
-| Platform | Available aliases |
-|---|---|
-| DeepSeek | `deepseek` / `ds` / `深度求索` |
-| SiliconFlow | `siliconflow` / `sc` / `硅基` / `硅基流动` / `sc-cn` / `硅基cn` |
-| Moonshot (Kimi) | `moonshot` / `kimi` / `月之暗面` |
-| OpenAI | `openai` / `gpt` / `chatgpt` |
-| ChatAnywhere | `chatanywhere` |
-| NEW API | `newapi` |
-
-Aliases come from the `platform_names` config item and are shared by `/balance` and `/test`; add, edit or remove them freely. Platforms without a fixed domain (ChatAnywhere, NEW API) can only be addressed by their own platform name.
-
-## Configuration
-
-### Basic Settings
-
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `admin_only` | bool | `false` | Restrict to admins only |
-| `output_language` | string | `auto` | Output language: `auto` (switch by command language) / `zh` (force Chinese) / `en` (force English) |
-| `newapi_base_url` | text | empty | New API relay site URLs, one per line; used by `/balance newapi` to aggregate multiple instances |
-| `openai_admin_key` | string | empty | OpenAI admin key (`sk-admin-…`, optional): when set, querying the official OpenAI endpoint reports **this month's accumulated spend** (OpenAI has no balance API, so this is spend, not remaining credit) |
-| `request_timeout` | float | `10.0` | Request timeout (seconds) |
-| `show_unsupported` | bool | `true` | Show unsupported platforms in `/balance all` |
-| `platform_names` | list | 5 presets for common platforms | API endpoint and platform alias map: each item `endpoint=abbr1,abbr2` (one endpoint may have multiple comma-separated abbreviations, multiple rows allowed). Abbreviations work for both `/balance <abbr>` and `/test <abbr>`, and shown endpoints are replaced by the first one. Ships with DeepSeek / SiliconFlow / Moonshot / OpenAI presets, all editable or removable |
-
-### Output Templates
-
-All templates support `\n` newlines and the following variables:
-
-| Variable | Description | Used in |
+| Command | Permission | Description |
 |---|---|---|
-| `{{api_key}}` | Masked API key | success / failure |
-| `{{source_name}}` | Platform name (e.g. DeepSeek) | success / failure |
-| `{{error}}` | Error message | failure |
-| `{{currency}}` | Currency (e.g. CNY / USD) | success |
-| `{{balance}}` | Smart balance (shows remaining when it differs from total) | success |
-| `{{total_balance}}` | Total balance | success |
-| `{{remaining_balance}}` | Remaining balance | success |
-| `{{used_balance}}` | Used quota | success |
-| `{{raw_info}}` | Extra info (bonus/recharge details, etc.) | success |
-| `{{smart_balance}}` | Smart extra info (auto-hides meaningless lines) | success |
-| `{{?variable}}` | Conditional variable; hides the whole line when empty or `0` | success |
+| `/balance` (alias `/余额`) | Everyone | Show help; also shown with no arguments or `help` |
+| `/balance current` | Everyone | Balance of the model used by the current session |
+| `/balance all` | Everyone | Balance of all configured models (deduplicated, concurrent) |
+| `/balance <platform alias>` | Everyone | Balance of that platform, via the provider configured in AstrBot |
+| `/balance <alias> or <endpoint> <key1> [key2]...` | Everyone | Batch-query balance with the given keys |
+| `/balance <connection JSON>` | Everyone | Paste NewAPI connection info and query directly |
+| `/test` (alias `/测试`) | Everyone | Show help; also shown with no arguments or `help` |
+| `/test <alias> or <endpoint> <key1> [key2]... [model]` | Everyone | Test model availability |
+| `/test <connection JSON> [model]` | Everyone | Paste connection info and test directly |
 
-<details>
-<summary>Default templates (7 items)</summary>
-
-**success_template**
-
-```
-🟢 **{{source_name}}**
-  🔑 密钥: {{api_key}}
-  💵 {{balance}} {{currency}}
-{{smart_balance}}
-```
-
-**error_template**
-
-```
-🔴 **{{source_name}}**
-  🔑 密钥: {{api_key}}
-  ❌ {{error}}
-```
-
-- header_template: `💰 **{{title}}**` (variable: `{{title}}`)
-- separator_template: `════════════════════════════════════════` (between title and content)
-- item_separator_template: empty (between multiple results in the same section; blank line when empty)
-- section_separator_template: `════════════════════════════════════════` (between success/failure/unsupported sections)
-
-</details>
-
-## Usage Examples
+All commands are available to everyone by default; enable "admin only (`admin_only`)" to restrict them to admins. Chinese subcommands: current = 当前, all = 所有, help = 帮助.
 
 ### Platform aliases and custom endpoints
 
@@ -116,7 +46,7 @@ All templates support `\n` newlines and the following variables:
 /test https://your-api.com/v1 sk-xxxx1 sk-xxxx2 deepseek-chat
 ```
 
-To test your own relay, just replace the address of the matching line in `platform_names`, e.g. `https://my-relay.com=ds`, and `/test ds sk-xxx` will test that relay. Remove a line and that alias stops working (`/balance` can still query the platform by its platform name such as `deepseek`).
+Aliases come from "API endpoint alias map (`platform_names`)", which ships with common platforms preset — both the address and the alias are fully editable and removable. To test your own relay, just replace the address of the matching line, e.g. `https://my-relay.com=ds`, and `/test ds sk-xxx` will test that relay. Remove a line and that alias stops working (`/balance` can still query the platform by its platform name such as `deepseek`).
 
 > Note: `/balance <alias>` prefers the provider you configured for that platform in AstrBot (so a relay is queried through the relay); only a full URL triggers endpoint-mode querying.
 
@@ -162,7 +92,7 @@ Output example:
   🎯 测试模型: deepseek-chat ✅ 可用
 ```
 
-### Pasting NewAPI connection info and quoting messages
+### Pasting connection info and quoting messages
 
 Copy the connection info from the NewAPI panel and paste it straight after `/balance` or `/test`; the plugin reads the `key` and `url` out of the JSON for you:
 
@@ -183,7 +113,7 @@ If someone already posted a message with the endpoint and key (plain text or New
 
 ### New API multiple instances
 
-To check the balances of all your New API instances in one go, put one URL per line in `newapi_base_url` (you can also query them one by one with `/balance <url> <key>` or aliases):
+To check the balances of all your New API instances in one go, put one URL per line in "New API base URL (`newapi_base_url`)" (you can also query them one by one with `/balance <url> <key>` or aliases):
 
 ```
 http://192.168.1.1:3000
@@ -194,20 +124,106 @@ After configuring, send `/balance newapi`; the plugin matches each URL to its co
 
 ### Querying OpenAI official spend
 
-OpenAI does **not** provide an API for reading remaining account balance, but it does provide usage and cost statistics. Those endpoints only accept an **admin key**; a regular project key returns 403.
+OpenAI does **not** provide an API for reading remaining account balance, but it does provide usage and cost statistics, and those endpoints only accept an **admin key**; a regular project key returns 403.
 
-Once `openai_admin_key` is configured (`sk-admin-…`, created under Organization → Admin API Keys in the OpenAI dashboard), querying the official OpenAI endpoint reports **this month's accumulated spend**. Note this is **spend**, not **balance**: OpenAI bills against prepaid credit, so the remaining credit must be checked in the OpenAI dashboard. Without `openai_admin_key`, querying the official endpoint reports that no balance is available and explains why.
+Once "OpenAI admin key (`openai_admin_key`)" is configured (`sk-admin-…`, created under Organization → Admin API Keys in the OpenAI dashboard), querying the official OpenAI endpoint reports **this month's accumulated spend**. Note this is **spend**, not **balance**: OpenAI bills against prepaid credit, so the remaining credit must be checked in the OpenAI dashboard. Without it, querying the official endpoint reports that no balance is available and explains why.
 
-## FAQ
+## Configuration
+
+All settings live in the AstrBot WebUI plugin config page and take effect immediately.
+
+### Platforms and endpoints
+
+Start here on first use: to query your own relay, just add its address to "API endpoint alias map (`platform_names`)".
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| API endpoint alias map (`platform_names`) | list | 5 presets for common platforms | Each item `endpoint=abbr1,abbr2`; one endpoint may have multiple comma-separated abbreviations. Abbreviations work for both `/balance <abbr>` and `/test <abbr>`, and shown endpoints are replaced by the first one; addresses and aliases are all editable |
+| New API base URL (`newapi_base_url`) | text | empty | New API relay site URLs, one per line; used by `/balance newapi` to aggregate multiple instances |
+| OpenAI admin key (`openai_admin_key`) | string | empty | Starts with `sk-admin-`, optional; when set, querying the official OpenAI endpoint reports this month's accumulated spend (OpenAI has no balance API, so this is spend, not remaining credit) |
+
+<details>
+<summary>Basic settings (4 items)</summary>
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| Admin only (`admin_only`) | bool | `false` | When enabled, all commands are restricted to admins |
+| Output language (`output_language`) | string | `auto` | `auto` switches by command language / `zh` forces Chinese / `en` forces English |
+| Request timeout (`request_timeout`) | float | `10.0` | Per-request timeout in seconds |
+| Show unsupported platforms (`show_unsupported`) | bool | `true` | Whether `/balance all` lists unsupported platforms |
+
+</details>
+
+<details>
+<summary>Output templates (6 items + 11 variables)</summary>
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| Success template (`success_template`) | text | see below | Format for a successful query |
+| Failure template (`error_template`) | text | see below | Format for a failed query |
+| Header template (`header_template`) | string | `💰 **{{title}}**` | Report title, variable `{{title}}` |
+| Title separator (`separator_template`) | string | one `════════` line | Separator between the title and the content |
+| Item separator (`item_separator_template`) | string | empty | Between results in the same section; blank line when empty |
+| Section separator (`section_separator_template`) | string | one `════════` line | Between success/failure/unsupported sections |
+
+All templates support `\n` newlines and the following variables:
+
+| Variable | Description | Used in |
+|---|---|---|
+| `{{api_key}}` | Masked API key | success / failure |
+| `{{source_name}}` | Platform name (e.g. DeepSeek) | success / failure |
+| `{{error}}` | Error message | failure |
+| `{{currency}}` | Currency (e.g. CNY / USD) | success |
+| `{{balance}}` | Smart balance (shows remaining when it differs from total) | success |
+| `{{total_balance}}` | Total balance | success |
+| `{{remaining_balance}}` | Remaining balance | success |
+| `{{used_balance}}` | Used quota | success |
+| `{{raw_info}}` | Extra info (bonus/recharge details, etc.) | success |
+| `{{smart_balance}}` | Smart extra info (auto-hides meaningless lines) | success |
+| `{{?variable}}` | Conditional variable; hides the whole line when empty or `0` | success |
+
+Default `success_template`:
+
+```
+🟢 **{{source_name}}**
+  🔑 密钥: {{api_key}}
+  💵 {{balance}} {{currency}}
+{{smart_balance}}
+```
+
+Default `error_template`:
+
+```
+🔴 **{{source_name}}**
+  🔑 密钥: {{api_key}}
+  ❌ {{error}}
+```
+
+</details>
+
+## Others
+
+### Supported platforms
+
+| Platform | Available aliases |
+|---|---|
+| DeepSeek | `deepseek` / `ds` / `深度求索` |
+| SiliconFlow | `siliconflow` / `sc` / `硅基` / `硅基流动` / `sc-cn` / `硅基cn` |
+| Moonshot (Kimi) | `moonshot` / `kimi` / `月之暗面` |
+| OpenAI | `openai` / `gpt` / `chatgpt` |
+| ChatAnywhere | `chatanywhere` |
+| NEW API | `newapi` |
+
+Aliases come from "API endpoint alias map (`platform_names`)" and are freely editable. Platforms without a fixed domain (ChatAnywhere, NEW API) can only be addressed by their own platform name.
+
+### FAQ
 
 **The official OpenAI endpoint reports "unable to get balance info" — is the plugin broken?**
-No. The balance API this plugin uses (`/v1/dashboard/billing/*`) is implemented by **relay sites such as New API / One API** for compatibility with the legacy OpenAI dashboard; OpenAI has never provided it, so it can never work against the official domain — no tool can retrieve it there. For official accounts, check balance and usage in the OpenAI dashboard (Billing page); relay sites are unaffected and keep working.
-
-If you want monetary data for an official account inside the chat, configure `openai_admin_key` (an admin key is required) and the plugin reports **this month's accumulated spend** — spend, not remaining balance, since OpenAI has no balance API. The plugin now includes the returned status in the message, so you can tell "this endpoint has no such API" apart from an invalid key.
+No. The balance API this plugin uses (`/v1/dashboard/billing/*`) is implemented by **relay sites such as New API / One API** for compatibility with the legacy OpenAI dashboard; OpenAI has never provided it, so it can never work against the official domain — no tool can retrieve it there. For official accounts, check balance and usage in the OpenAI dashboard (Billing page); relay sites are unaffected and keep working. To see official account figures in chat, configure "OpenAI admin key (`openai_admin_key`)" and the plugin reports this month's accumulated spend — spend, not remaining balance.
 
 **I get no balance and want to see which URLs the plugin actually called.**
 Set the AstrBot log level to `DEBUG` and run the query again. Log lines tagged `🔍 余额探测` show each probe endpoint and its response status, and `🔀 余额选路` shows which fetcher the site finally used — enough to tell an unsupported balance API apart from a key or network problem.
 
-## Security Note
+### Security note
 
 Queries containing API keys are best done in private chats to avoid leaking them in group chats.
