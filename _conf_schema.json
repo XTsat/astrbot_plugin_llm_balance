@@ -1,4 +1,29 @@
 {
+  "platform_names": {
+    "description": "API 连接缩写映射",
+    "type": "list",
+    "hint": "把 API 连接地址替换为自定义缩写显示，也可作为 /余额、/测试 命令的网址参数使用（如发 /测试 ds sk-xxx 即按 https://api.deepseek.com 实测）。每项格式：API连接地址=缩写1,缩写2（一个连接可配多个缩写，英文逗号分隔）。已预置常用平台，地址与缩写都可自由修改或删除；删除后该平台只能用完整网址或平台别名（如 /余额 ds）查询。未命中的连接保持原样显示。",
+    "default": [
+      "https://api.deepseek.com=ds,deepseek,深度求索",
+      "https://api.siliconflow.com=sc,硅基,硅基流动",
+      "https://api.siliconflow.cn=sc-cn,硅基cn",
+      "https://api.moonshot.cn=kimi,moonshot,月之暗面",
+      "https://api.openai.com=openai,gpt,chatgpt"
+    ]
+  },
+  "newapi_base_url": {
+    "description": "NEW API 基地址",
+    "type": "text",
+    "hint": "填写你的 NEW API 中转站地址，每行一个。例如：http://192.168.1.1:3000（不需要带 /api/usage/token）",
+    "default": ""
+  },
+  "openai_admin_key": {
+    "description": "OpenAI 官方 Admin Key",
+    "type": "string",
+    "secret": true,
+    "hint": "可选。OpenAI 官方不提供余额查询接口，唯一可查的金额数据是「本月花费」，且需要 Admin Key（在 OpenAI 后台 Organization → Admin API Keys 创建，以 sk-admin- 开头）。填写后，查询 OpenAI 官方端点会显示本月累计花费（非剩余余额）。不填则官方端点仅提示查不到余额。",
+    "default": ""
+  },
   "admin_only": {
     "description": "仅管理员可用",
     "type": "bool",
@@ -20,19 +45,6 @@
     ],
     "hint": "auto：按指令语言自动切换（中文指令输出中文，英文指令输出英文）；zh：强制中文；en：强制英文",
     "default": "auto"
-  },
-  "newapi_base_url": {
-    "description": "NEW API 基地址",
-    "type": "text",
-    "hint": "填写你的 NEW API 中转站地址，每行一个。例如：http://192.168.1.1:3000（不需要带 /api/usage/token）",
-    "default": ""
-  },
-  "openai_admin_key": {
-    "description": "OpenAI 官方 Admin Key",
-    "type": "string",
-    "secret": true,
-    "hint": "可选。OpenAI 官方不提供余额查询接口，唯一可查的金额数据是「本月花费」，且需要 Admin Key（在 OpenAI 后台 Organization → Admin API Keys 创建，以 sk-admin- 开头）。填写后，查询 OpenAI 官方端点会显示本月累计花费（非剩余余额）。不填则官方端点仅提示查不到余额。",
-    "default": ""
   },
   "request_timeout": {
     "description": "请求超时时间",
@@ -63,17 +75,5 @@
     "type": "text",
     "hint": "查询失败时的显示格式。可用变量：{{api_key}}（脱敏密钥）、{{source_name}}（平台名称）、{{error}}（错误信息）。",
     "default": "🔴 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  ❌ {{error}}"
-  },
-  "platform_names": {
-    "description": "API 连接缩写映射",
-    "type": "list",
-    "hint": "把 API 连接地址替换为自定义缩写显示，也可作为 /余额、/测试 命令的网址参数使用（如发 /测试 ds sk-xxx 即按 https://api.deepseek.com 实测）。每项格式：API连接地址=缩写1,缩写2（一个连接可配多个缩写，英文逗号分隔）。已预置常用平台，地址与缩写都可自由修改或删除；删除后该平台只能用完整网址或平台别名（如 /余额 ds）查询。未命中的连接保持原样显示。",
-    "default": [
-      "https://api.deepseek.com=ds,deepseek,深度求索",
-      "https://api.siliconflow.com=sc,硅基,硅基流动",
-      "https://api.siliconflow.cn=sc-cn,硅基cn",
-      "https://api.moonshot.cn=kimi,moonshot,月之暗面",
-      "https://api.openai.com=openai,gpt,chatgpt"
-    ]
   }
 }
