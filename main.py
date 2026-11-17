@@ -1155,7 +1155,8 @@ class BalancePlugin(Star):
         return ""
 
     def _split_endpoint_args(self, text: str) -> tuple[str, str] | None:
-        """找出参数里的 API 端点，返回 (端点, 其余参数)；网址与密钥顺序不限、可用换行分隔，也认 platform_names 缩写"""
+        """找出参数里的 API 端点，返回 (端点, 其余参数)；网址与密钥顺序不限、可用换行分隔，
+        也认 platform_names 里配置的缩写（默认已预置常用平台，如 ds / kimi）"""
         tokens = text.split()
         for index, token in enumerate(tokens):
             if token.lower().startswith(("http://", "https://")):
@@ -1273,13 +1274,19 @@ class BalancePlugin(Star):
                 yield msg
         else:
             extra = parts[1].strip() if len(parts) > 1 else ""
-            resolved = self._resolve_endpoint_abbr(raw_sub) or self._resolve_endpoint_abbr(sub_command)
-            if resolved:
-                async for msg in self._query_custom(event, resolved, extra):
-                    yield msg
-            else:
+            # 平台简写优先于连接缩写：platform_names 默认预置了各平台地址，
+            # 若先按缩写解析，/余额 ds 会被当成自定义端点，查不到已配置的 provider
+            if sub_command in self.alias_map:
                 async for msg in self._query_by_platform(event, sub_command, extra):
                     yield msg
+            else:
+                resolved = self._resolve_endpoint_abbr(raw_sub) or self._resolve_endpoint_abbr(sub_command)
+                if resolved:
+                    async for msg in self._query_custom(event, resolved, extra):
+                        yield msg
+                else:
+                    async for msg in self._query_by_platform(event, sub_command, extra):
+                        yield msg
 
     def _get_output_lang(self, event: AstrMessageEvent) -> str:
         """决定输出语言：配置 output_language（auto/zh/en）优先，auto 时按指令语言推断"""
@@ -1327,6 +1334,7 @@ class BalancePlugin(Star):
                     "          /test https://api.example.com key:my-custom-key model:my-model\n"
                     "          /test {\"_type\":\"newapi_channel_conn\",\"key\":\"sk-xxxxxxxx\",\"url\":\"https://api.example.com\"} deepseek-chat\n"
                     "          /test sk-xxxxxxxx https://api.example.com deepseek-chat\n"
+                    "          /test ds sk-xxxxxxxx\n"
                     "Auto-detects OpenAI-compatible endpoints: lists models and runs chat calls to verify the key.\n"
                     "Auto mode tests up to 3 chat models (stops on first failure);\n"
                     "An optional trailing model name tests that model directly (hard-tested even if not in the model list).\n"
@@ -1334,6 +1342,7 @@ class BalancePlugin(Star):
                     "The URL and key can be in any order, and one per line (newline separated) works too.\n"
                     "You can also paste the NewAPI connection info JSON copied from the panel: its url and key are used directly.\n"
                     "Quote a message holding the endpoint and key, then send /test alone to test that quoted content.\n"
+                    "Platform aliases work too (same names as /balance): /test ds sk-xxxxxxxx\n"
                     "Chinese alias: /测试"
                 )
             else:
@@ -1345,6 +1354,7 @@ class BalancePlugin(Star):
                     "      /测试 https://api.example.com key:自定义密钥 model:模型名\n"
                     "      /测试 {\"_type\":\"newapi_channel_conn\",\"key\":\"sk-xxxxxxxx\",\"url\":\"https://api.example.com\"} deepseek-chat\n"
                     "      /测试 sk-xxxxxxxx https://api.example.com deepseek-chat\n"
+                    "      /测试 ds sk-xxxxxxxx\n"
                     "自动识别 OpenAI 兼容端点：列出可用模型并实测调用，验证 Key 是否有效。\n"
                     "自动模式最多实测前 3 个聊天类模型（遇失败即停）；\n"
                     "末尾可指定模型名，直接实测该模型（不在模型列表中也会硬测）。\n"
@@ -1352,6 +1362,7 @@ class BalancePlugin(Star):
                     "网址与密钥顺序不限，一条一行（换行分隔）同样可以。\n"
                     "也可直接粘贴 NewAPI 复制连接信息 JSON，自动取其中的网址与密钥；末尾仍可加模型名。\n"
                     "引用一条含站点与密钥的消息后只发 /测试，即测试这条被引用的内容。\n"
+                    "也可直接用平台简写（与 /余额 同名，如 ds、kimi），按该平台的 API 地址实测：/测试 ds sk-xxxxxxxx\n"
                     "英文别名：/test"
                 )
             yield event.plain_result(usage)

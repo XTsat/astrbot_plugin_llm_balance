@@ -32,6 +32,7 @@
 /balance <API endpoint> <key1> [key2]...     # query a custom API endpoint (dedicated interface for known platforms, otherwise OpenAI Billing / New API probing)
 /balance <JSON config> [key2]...              # paste NewAPI connection info directly to query balance, more keys may follow
 /test <API endpoint> <key1> [key2]... # test model availability on an OpenAI-compatible endpoint
+/test <platform alias> <key1> [key2]... # test via a platform alias (same names as /balance, e.g. ds, kimi)
 ```
 
 English aliases: `/balance` (same as `/余额`) and `/test` (same as `/测试`); subcommand aliases: 当前 = `current`, 所有 = `all`, 帮助 = `help`.
@@ -161,6 +162,26 @@ The `/test` command tests whether models on any OpenAI-compatible endpoint are u
 /test https://api.example.com sk-xxxx deepseek-chat
 /test https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
 ```
+
+You can also use a **platform alias** directly, no full URL needed:
+
+```
+/test ds sk-xxxx        # same as /test https://api.deepseek.com sk-xxxx
+/test kimi sk-xxxx      # Moonshot
+/test openai sk-xxxx    # official OpenAI
+```
+
+These aliases come from the `platform_names` config item, which ships with common platforms preset — **both the address and the alias are fully editable and removable**:
+
+```
+https://api.deepseek.com=ds,deepseek,深度求索
+https://api.siliconflow.com=sc,硅基,硅基流动
+https://api.siliconflow.cn=sc-cn,硅基cn
+https://api.moonshot.cn=kimi,moonshot,月之暗面
+https://api.openai.com=openai,gpt,chatgpt
+```
+
+To test your own relay, just replace the address, e.g. `https://my-relay.com=ds`, and `/test ds sk-xxx` will test that relay. Remove a line and that alias stops working (`/balance` can still query the platform by its platform alias).
 
 The URL and the key can come in **any order**, and pasting one value per line works too (newlines count as spaces):
 

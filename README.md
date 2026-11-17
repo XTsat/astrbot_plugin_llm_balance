@@ -32,6 +32,7 @@
 /余额 <API端口> <key1> [key2]...   # 查询自定义 API 端点的余额（命中内置平台走专用接口，否则自动探测 OpenAI Billing / New API）
 /余额 <JSON配置> [key2]...          # 直接粘贴 NewAPI 复制连接信息查询余额，可继续追加更多密钥
 /测试 <API网址> <key1> [key2]... # 测试 OpenAI 兼容端点的模型可用性
+/测试 <平台简写> <key1> [key2]... # 用平台简写测试（与 /余额 同名，如 ds、kimi）
 ```
 
 英文别名：`/余额` = `/balance`，`/测试` = `/test`；子命令：当前 = current，所有 = all，帮助 = help。
@@ -62,7 +63,7 @@
 | `request_timeout` | float | `10.0` | 请求超时（秒） |
 | `show_unsupported` | bool | `true` | `/余额 所有` 中显示未适配平台 |
 | `platform_aliases` | object | — | 各平台别名，逗号分隔 |
-| `platform_names` | list | — | API 连接缩写映射：每项 `API连接地址=缩写1,缩写2`（一个连接可配多个缩写，逗号分隔，可添加多行）；输出中的连接地址自动替换为第一个缩写，`/余额` 与 `/测试` 的网址参数可用任一缩写代替 |
+| `platform_names` | list | 预置 5 条常用平台 | API 连接缩写映射：每项 `API连接地址=缩写1,缩写2`（一个连接可配多个缩写，逗号分隔，可添加多行）；输出中的连接地址自动替换为第一个缩写，`/余额` 与 `/测试` 的网址参数可用任一缩写代替。默认预置 DeepSeek / 硅基流动 / Moonshot / OpenAI 的地址，可自由修改或删除 |
 
 ### 输出模板
 
@@ -161,6 +162,26 @@ OpenAI 官方**不提供**查询账户剩余余额的接口，但它提供用量
 /测试 https://api.example.com sk-xxxx deepseek-chat
 /测试 https://api.example.com sk-xxxx1 sk-xxxx2 glm-4-flash
 ```
+
+也可以直接用**平台简写**，不必再写完整网址：
+
+```
+/测试 ds sk-xxxx        # 等价于 /测试 https://api.deepseek.com sk-xxxx
+/测试 kimi sk-xxxx      # Moonshot
+/测试 openai sk-xxxx    # OpenAI 官方
+```
+
+这些简写来自配置项 `platform_names`，已预置常用平台的地址，**地址与缩写都能自由修改或删除**：
+
+```
+https://api.deepseek.com=ds,deepseek,深度求索
+https://api.siliconflow.com=sc,硅基,硅基流动
+https://api.siliconflow.cn=sc-cn,硅基cn
+https://api.moonshot.cn=kimi,moonshot,月之暗面
+https://api.openai.com=openai,gpt,chatgpt
+```
+
+想测自己的中转站，把地址换掉即可，例如 `https://my-relay.com=ds`，之后 `/测试 ds sk-xxx` 就测这个中转站。删掉某一行后，该缩写不再可用（`/余额` 仍可用平台别名查询）。
 
 网址和密钥的**先后顺序不限**，从面板里分几行复制也可以（换行当空格用）：
 
