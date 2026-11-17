@@ -3,7 +3,7 @@
 > 本文件是任何 AI 编码代理（agent）进入 **astrbot_plugin_llm_balance** 仓库时的**必读**工作说明书。
 > 它约定本插件的架构、代码规范、文档维护规则、部署与热重载流程。任何对代码、配置、行为的改动，都必须同时遵守本文档的规则。
 >
-> **模板版本**：v0.1.5（2026-11-03） —— 本行标记本文件对应的 `astrbot-plugin` 模板版本。回填项目内容时**不要改动本行**；只有从上游合并到新版本时才把它更新为合并到的版本。
+> **模板版本**：v0.1.12（2026-11-08） —— 本行标记本文件对应的 `astrbot-plugin` 模板版本。回填项目内容时**不要改动本行**；只有从上游合并到新版本时才把它更新为合并到的版本。
 > **来源**：本文件是 [agent-templates](https://github.com/XTsat/agent-templates) 的 `templates/astrbot-plugin/AGENTS.md` 副本，按本仓库实际情况本地化，最新版见该仓库 `main` 分支。
 > 用户说「更新 AGENTS」时按此流程：① 打开来源仓库该模板的 `AGENTS.md`，比对头部「模板版本」与本地是否一致——一致说明已是最新，直接结束，不必拉取逐节比对 → ② 不一致才拉取来源模板最新版 → ③ 与本地逐节比对 → ④ 合并（保留本项目已回填的插件名、命令名、目录结构与项目特有约定）→ ⑤ 展示 diff 与改动清单，等用户确认后再落盘，并把头部「模板版本」同步改为合并到的版本。**禁止整文件覆盖**。
 
@@ -17,8 +17,8 @@
 
 | 文件 | 必选 | 职责 |
 |------|------|------|
-| `main.py` | ✅ | 插件主体（单文件，约 1750 行，全部后端逻辑） |
-| `metadata.yaml` | ✅ | 插件元数据：必填 `name`/`desc`/`version`/`author`，推荐 `display_name`/`repo`，可选 `tags`/`short_desc`/`support_platforms`；`astrbot_version` 只在能明确最低支持版本时才填（不填估算值）。也是插件注册信息与唯一版本源 |
+| `main.py` | ✅ | 插件主体（单文件，约 2060 行，全部后端逻辑） |
+| `metadata.yaml` | ✅ | 插件元数据：必填 `name`/`desc`/`version`/`author`，推荐 `display_name`/`repo`，可选 `tags`（**全量、单概念**关键词，README 头部只挑重点）/`short_desc`/`support_platforms`；`astrbot_version` 只在能明确最低支持版本时才填（不填估算值）。也是插件注册信息与唯一版本源 |
 | `_conf_schema.json` | ✅ | WebUI 配置 Schema |
 | `README.md` | ✅ | 中文文档（权威源，双语对的源侧） |
 | `README_en.md` | ✅ | 英文文档（跟随中文版单向同步） |
@@ -49,11 +49,11 @@ astrbot_plugin_llm_balance/
 
 ### 2.2 架构倾向
 
-**单文件风格**（当前已约 1750 行，仍保持单文件，不拆分）。文件内部按职责分层，用 `# ==================== 分区名 ====================` 分隔条组织，分区顺序固定：
+**单文件风格**（当前已约 2060 行，仍保持单文件，不拆分）。文件内部按职责分层，用 `# ==================== 分区名 ====================` 分隔条组织，分区顺序固定：
 
 1. 模块常量（`NON_CHAT_HINTS` / `CHAT_KEY_HINTS` / `KEY_PREFIXES` / 密钥与模型名相关正则）
 2. 数据模型（`BalanceResult` / `ModelTestResult`）
-3. Fetcher 基类（`BaseBalanceFetcher(ABC)`）与各平台 Fetcher（`DeepSeekFetcher` / `SiliconCloudFetcher` / `MoonshotFetcher` / `ChatAnywhereFetcher` / `OpenAIFetcher` / `NewApiFetcher`）
+3. Fetcher 基类（`BaseBalanceFetcher(ABC)`）与各平台 Fetcher（`GenericFetcher`（未适配平台的通用探测）/ `DeepSeekFetcher` / `SiliconCloudFetcher` / `MoonshotFetcher` / `ChatAnywhereFetcher` / `OpenAIFetcher` / `NewApiFetcher`）
 4. 余额查询管理器（`BalanceManager`）
 5. 主插件类（`BalancePlugin(Star)`）：配置解析与工具方法 → 参数解析 → 余额查询实现（`_query_*`）→ 命令 handler（`balance` / `test_model`）→ 模型测试 → 文案与生命周期
 
@@ -68,6 +68,7 @@ astrbot_plugin_llm_balance/
 - **AstrBot API**：`astrbot.api.star`（Context, Star）、`astrbot.api.event`（filter, AstrMessageEvent）、`astrbot.api`（logger, AstrBotConfig）
 - **运行时依赖**：aiohttp（AstrBot 自带，顶层 import）；本仓库不声明 `requirements.txt`。AstrBot 运行时已自带的依赖（如 `aiohttp`、`certifi`）可直接引用，其余依赖惰性 import，import 失败时优雅降级
 - **禁止引入**：不引入与原功能无关的依赖，不新增 `requirements.txt` 声明。若确需新增依赖，必须惰性 import（方法内 import），并在 import 失败时优雅降级、保证插件仍能加载
+- **日志库**：唯一来源是 `from astrbot.api import logger`（AstrBot 官方插件文档要求「使用 `astrbot.api` 的 logger，而不是 `logging` 模块」）。**禁止** `import logging` / `logging.getLogger(...)` / `logging.basicConfig(...)`，也禁止 `loguru` 等第三方日志库、禁止把日志库写进 `requirements.txt`。理由见 4.5
 
 ## 4. 核心代码规范
 
@@ -117,6 +118,8 @@ class BalancePlugin(Star):
 
 ### 4.5 日志
 
+- **日志来源唯一**：`from astrbot.api import logger`。**禁止** `import logging` / `logging.getLogger(...)`（含「SDK 缺失时退回标准库 logging」这类降级分支），也**禁止** `loguru` 等第三方日志库——AstrBot 官方插件文档原文是「请务必使用 `from astrbot.api import logger` 来获取日志对象，而不是使用 `logging` 模块」
+- **为什么自建 logger 不行**：`astrbot.api.logger` 按**调用位置**路由到本插件专属 logger（`astrbot.plugin.<插件名>`）。本插件单文件，直接 `from astrbot.api import logger` 就自动归属本插件，不需要自建、也不需要把 logger 当参数层层传递。自建 `logging.getLogger("astrbot_plugin_llm_balance.xxx")` 的名字对不上这条链路：日志没有插件归属、插件详情页的独立日志等级与面板的按插件筛选都不生效
 - 统一 `logger.info/warning/error`，**必须带 `[astrbot_plugin_llm_balance]` 前缀**
 - 错误信息带 emoji 前缀（`❌`、`⚠️`）
 - 精确捕获异常类型（`asyncio.TimeoutError`、`aiohttp.ClientError`），禁止空 `except: pass`（除非注释说明理由）
@@ -157,8 +160,8 @@ class BalancePlugin(Star):
 
 - 新增配置项 → 先在 `_conf_schema.json` 补 schema，再在代码中实现读写；**schema 里有的项必须在 README 配置表中出现**（漏写 = 文档不全）
 - **格式是扁平字典**：顶层 key 就是配置项 key，值是该配置项的 schema 节点。**没有 `fields` 数组、没有 `schemaVersion` 之类的自造外壳**——AstrBot 直接把整个 JSON 当「key → 节点」解析，套错外壳等于没有配置项
-- 常用节点字段：`type`（必填，`string`/`text`/`int`/`float`/`bool`/`object`/`list`/`template_list`）、`description`（WebUI 显示的配置名）、`hint`（右侧问号里的补充说明）、`default`、`options`+`labels`+`subtitles`（下拉选项）、`slider`（`{"min","max","step"}`，仅 int/float）、`secret`（密钥类字符串遮罩显示）、`invisible`、`items`（`object`/`list` 的子 schema）、`_special`（用户/会话选择器等）
-- 配置分组用 `object` 嵌套表达（子 schema 放 `items`），WebUI 会按层级展示；**不要在 schema 里发明分组字段**（本仓库 `platform_aliases` 即此形态）
+- 常用节点字段：`type`（必填，`string`/`text`/`int`/`float`/`bool`/`object`/`list`/`dict`/`template_list`）、`description`（WebUI 显示的配置名）、`hint`（右侧问号里的补充说明）、`default`、`options`+`labels`+`subtitles`（下拉选项）、`slider`（`{"min","max","step"}`，仅 int/float）、`secret`（密钥类字符串遮罩显示）、`invisible`、`items`（`object`/`list`/`dict` 的子 schema）、`_special`（用户/会话选择器等）
+- 配置分组用 `object` 嵌套表达（子 schema 放 `items`），WebUI 会按层级展示；**不要在 schema 里发明分组字段**（本仓库配置目前全部是顶层扁平项，`platform_names` 为 `list`）
 - 文档正文引用配置项时，**中文名在前、英文 key 在后**：统一写成「简明中文名（`key`）」，例如「请求超时（`request_timeout`）」「输出语言（`output_language`）」「API 连接缩写映射（`platform_names`）」，key 用反引号包裹。**中文名取自 schema 的 `description`**（`hint` 是问号里的整句说明，不是短名称，不要拿它当配置名）；本仓库 README 配置表首列保持 `key`、「说明」列取 `hint` 要点，正文引用处补简明中文名
 
 ### 5.2 配置读取模式
@@ -210,14 +213,16 @@ async def test_model(self, event: AstrMessageEvent):
 
 ## 7. 文档维护规范（强制，不可省略）
 
-> 本项目的**硬性要求**：任何改动在合并前，必须同步维护 `README.md`、`README_en.md` 与 `CHANGELOG.md`。未同步文档 = 任务未完成。
+> 本项目的**硬性要求**：任何改动在合并前，必须同步维护 `README.md`、`README_en.md` 与 `CHANGELOG.md`。未同步文档 = 任务未完成。这里的「同步」= 追加 / 合并 / 删除条目，按改动性质选择：新增改动追加条目，同一变化合并成一条，发版前被撤销的改动删掉其条目（见 7.1 流程）。
 
 ### 7.1 CHANGELOG 维护
 
 #### 流程
 
 - 日常改动先记在 `## [Unreleased]` 段（顶部固定）；**发版时**再移动到带版本号的新段
-- **先记后合**：记录阶段同一工作周期内的改动各自独立记入 `[Unreleased]`（同一功能的多处调整也先各记一条，避免遗漏）；提交或发版前的整理阶段统一过一遍，把描述同一件事的多条合并成一条，不相关改动保持独立（判断标准：用户会不会把它当成同一件事）
+- **先记后合**：记录阶段同一工作周期内的改动各自独立记入 `[Unreleased]`（同一功能的多处调整也先各记一条，避免遗漏）；提交或发版前的整理阶段统一过一遍，把描述同一件事的多条合并成一条，不相关改动保持独立（判断标准：用户会不会把它当成同一件事，细则见下方「写作视角」）
+- **「上一版」= 上一次发布**：本文件所说的「上一版」指 `CHANGELOG.md` 中最新的 `## vX.Y.Z` 段，即用户当前实际在用的版本；**不是上一个 commit、也不是 HEAD**。条目只需回答「这个版本和上一版比变了什么」，与中间经历过几次提交无关
+- **发版前被撤销的改动不留痕**：某改动只在 `[Unreleased]` 里记过、发版前又被移除时，整理阶段**删掉对应条目**即可，不写「新增后又移除」「已取消」「原计划作废」这类叙述——那是开发过程，不是用户能感知的差异。`### 移除` 只用于删除**上一版已发布**过的功能（该情形属破坏性变更，按 SemVer 升 major/minor）。想在中间过程留痕就写 commit message（如 `revert: 移除 X`）和 PR 描述，CHANGELOG 不是 git log
 - **发版日期**：版本段日期 `(YYYY-MM-DD)` 填**发版当天**的系统日期
 
 #### 格式
@@ -275,9 +280,18 @@ CHANGELOG 的读者是**插件使用者**（服务器管理员、群成员），
 - **唯一版本源**：`metadata.yaml` 的 `version` 字段（`vX.Y.Z` 格式）。需要「插件版本」时一律以它为准
 - 辅助位置**不是版本源、不决定版本号**，但发版时必须同步到同一版本号：本插件 README 目前无版本徽章与版本字样（若将来新增则发版同步），展示版本时从 `metadata.yaml` 读取，不手写重复版本号
 
-#### 多会话并行开发
+#### 多会话并行开发（并行修改协议，适用于所有共享文件）
 
-**⚠️ 更新 `CHANGELOG.md` 前必须先读取当前文件内容**，识别并保留其他会话已写入的既有条目（含 `[Unreleased]` 下未提交的功能），只追加自己的条目，**严禁整文件覆盖或删除他人记录**。
+**触发条件**：只有出现下列情况才启用本节，否则按普通流程走，**不增加任何额外动作**——① 仓库里存在他人未提交或进行中的改动；② 用户明确要求并行工作；③ 任务板上存在他人 `in_progress` 任务，或与本会话写域重叠。
+
+1. **先划写域**：动手前列出本会话要改的文件，与并行方比对；有重叠就**停下来问用户**，不自行决定谁先写
+2. **按冲突面选手段**：不同文件 → 直接并行；同模块下不同文件 → 各自分支、收口时合并；同一文件的同一区块 / 版本号 / schema 变更 → 指定**唯一写者**，其余排队等
+3. **共享单文件先认领**：改动前在任务板置 `in_progress`，或落 `.locks/<文件名>.lock` 写明会话与时间，写完即释放；未认领就改共享文件 = 违规。`.locks/` 只存本地、**不提交**，发版前清理
+4. **记录类文件只追加**：CHANGELOG / TODO / 注册表 / 路由表这类文件只做定位式追加，**禁止整文件重写**（整文件写回会连带盖掉他人条目）
+5. **收口单一 owner**：合并由一个会话执行，其他人只产出分支或 patch，不各自往主干合
+6. **提交前自查**：`git status --short` 确认只碰本会话写域内的文件；看到别人的改动就停下来问，不顺手清理
+
+**CHANGELOG 专项**（条目写法见上方「流程」与「写作视角」）：更新 `CHANGELOG.md` 前必须先读取当前文件内容，识别并保留其他会话已写入的既有条目（含 `[Unreleased]` 下未提交的内容），只追加自己的条目，**严禁整文件覆盖或删除他人记录**。边界：本条保护的是**仍然有效**的记录；条目已被撤销、或已在本次发版中并入版本段，可以删除或移动，但删除前须能说清「谁被撤销 / 归并到哪」，不得顺手清理看不惯的内容。
 
 ### 7.2 README 维护
 
@@ -307,8 +321,10 @@ README 的读者是**插件使用者**，不是开发者。只写用户能直接
 
 ```html
 <div align="center">
+<img src="logo.png" alt="大模型余额查询与测试" width="160" />
 <h1>大模型余额查询</h1>
 <p><strong>查询各大模型平台余额，支持批量查询多个令牌…</strong></p>
+<!-- sub 行只挑插件真正的重点功能（数量不限，可为 metadata tags 的变体），全量标签留在 metadata.yaml 的 tags -->
 <p><sub>余额查询 &nbsp;&nbsp; 多平台 &nbsp;&nbsp; 模型测试</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
@@ -318,8 +334,10 @@ README 的读者是**插件使用者**，不是开发者。只写用户能直接
 
 ```html
 <div align="center">
+<img src="logo.png" alt="LLM Balance" width="160" />
 <h1>LLM Balance</h1>
 <p><strong>Query balances across major LLM platforms…</strong></p>
+<!-- list only the plugin's headline features here (no fixed count; wording may be a variant of the metadata tags); the full tag list lives in metadata.yaml -->
 <p><sub>balance &nbsp;&nbsp; multi-platform &nbsp;&nbsp; model testing</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
@@ -327,10 +345,11 @@ README 的读者是**插件使用者**，不是开发者。只写用户能直接
 
 命名规则：
 
+- **Logo**：头部第一行固定放插件图标 `<img src="logo.png" alt="插件名" width="160" />`——`logo.png` 与本 README 同目录、用相对路径引用（不写 GitHub raw 绝对链接、不复用 `metadata.yaml` 的远程图标地址）；`alt` 必填（中文版写 `display_name`，英文版写英文插件名），宽度固定 `160`，不加圆角/阴影等额外样式；中英两版都要有
 - **中文版 h1** = `metadata.yaml` 的 `display_name`（`大模型余额查询`）
 - **英文版 h1** = 插件名 `astrbot_plugin_llm_balance` 中 `llm_balance` 部分按词拆分后首字母大写（`LLM` 视为缩略词全大写）→ `LLM Balance`
 - **desc**：中文版取 `metadata.yaml` 的 `desc`；英文版做地道翻译，禁止逐字机翻
-- **tags**：取 `metadata.yaml` 的 `tags`，用 `&nbsp;&nbsp;` 分隔；英文版用英文标签
+- **tags**：`metadata.yaml` 的 `tags` 是**全量关键词清单**（供市场分类与搜索），**不因为 README 头部放不下就删减**；并且**每个标签只放一个概念**——复合词要拆开（「消息转发」→「消息」「转发」，「状态检测」→「状态」「检测」），不写「A+B」式复合词、不写整句，这样一个词条能被独立检索命中。README 头部的 `<sub>` 行只挑**插件真正的重点功能**当标签，**数量不硬性限定**（重点少就两三个，重点多可多列），按重要性排序，用 `&nbsp;&nbsp;` 分隔；README 的标签**可以写成 `tags` 的变体**（措辞更短、更面向用户，允许复合短语，如「消息转发」对应 `tags` 里的「消息」「转发」），不必逐字照抄，但必须是插件真实具备、用户能感知的能力，**不虚构、不夸大**。中文版用中文标签，英文版用英文标签
 - 语言切换链接互相指向对方文件
 
 #### 7.2.3 正文四大板块
@@ -351,9 +370,10 @@ README 的读者是**插件使用者**，不是开发者。只写用户能直接
 
 **配置板块怎么写（板块三）**：
 
-- 配置少就不分类：**≤ 6 项**直接一张表，不为了对称硬拆小节
+- **配置表是备查资料，不是配置入口**：用户在 WebUI 插件详情页的设置里直接改配置、改完即时生效，很少专门翻 README 找配置项——所以阈值放低（能折叠就折叠），说明列写短，只讲「这一项控制什么」
+- 配置少就不分类：**≤ 4 项**直接一张表，不为了对称硬拆小节
 - 更多就按类别分组：每类一个 `###` 子标题 + 该类一张表，顺序按用户上手顺序（基础/常用在前，进阶/排障在后）；分类要与 `_conf_schema.json` 的真实结构对得上（顶层 key 与 `object` 分组），不要写出 WebUI 里根本不存在的分组
-- 某一类本身很长（单类 > 10 行）或属于纯参考内容（逐字段明细、平台对照表、模板变量）时，把该类整表包进 `<details>` 折叠，`<summary>` 自解释（类别名 + 项数）：
+- **单类 ≥ 4 项就折叠**（不必等到单类 > 10 行），或属于纯参考内容（逐字段明细、平台对照表、模板变量）时，把该类整表包进 `<details>` 折叠，`<summary>` 自解释（类别名 + 项数）：
 
 ```markdown
 <details>
@@ -392,7 +412,7 @@ README 的读者是**插件使用者**，不是开发者。只写用户能直接
 #### 7.2.6 格式与多会话约束
 
 - **禁止无意义的换行**：HTML 头部区块内元素间不留空行；正文一段文字保持一行（不要人为软换行），空行只用于分隔标题、表格、列表、代码块等结构性区块
-- **多会话约束**：更新前必须先读当前内容，保留其他会话已写入的记录，只追加/修改自己的部分，**严禁整文件覆盖**
+- **多会话并行修改**：`README.md` / `README_en.md` 属共享单文件，按 7.1「多会话并行开发（并行修改协议）」执行——先认领，动手前读当前内容，只做定位式修改，不整文件覆盖
 
 ### 7.3 注释规范
 
@@ -454,12 +474,14 @@ README 的读者是**插件使用者**，不是开发者。只写用户能直接
 - [ ] 架构：单文件分层，新方法/新 Fetcher 放入既有分区，分区顺序稳定，未引入新目录
 - [ ] 命名：模块常量 UPPER_SNAKE、私有方法 `_` 前缀、Fetcher 类 `XxxFetcher`、命令 handler 语义名
 - [ ] 注释：只写 non-obvious reason，无残留中间状态、无被注释掉的旧代码
-- [ ] 日志：`[astrbot_plugin_llm_balance]` 前缀，异常分类记录，无空 catch
+- [ ] 日志：来源只有 `astrbot.api` 的 logger（无 `import logging` / `logging.getLogger` / 第三方日志库），`[astrbot_plugin_llm_balance]` 前缀，异常分类记录，无空 catch
 - [ ] 权限：管理命令开头 `_is_admin` 检查
 - [ ] 配置：新增配置项已按扁平 `{key: {...}}` 格式写进 `_conf_schema.json`，并在代码与 README 配置表中同步，文档按「中文名（`key`）」写法引用
-- [ ] CHANGELOG：`[Unreleased]` 已追加条目（分组式），**只写相对上一版的变化**、同一变化已合并为一条，条目面向用户（无内部实现细节），保留了他人既有记录
+- [ ] CHANGELOG：`[Unreleased]` 已同步（新增则追加、同一变化则合并、发版前被撤销则删除对应条目，不残留相对上一版不成立的内容），**只写相对上一版（上一次发布）的变化**、同一变化已合并为一条，条目面向用户（无内部实现细节），保留了他人既有记录
 - [ ] README：按 7.2.4 判定是否需更新；需更新时中文版先行并同步英文版，且面向用户书写（无实现原理与内部细节）
-- [ ] README 配置板块：> 6 项时已按类别分组，长尾表用 `<details>` 折叠且 summary 自解释、关键配置没被藏进折叠
+- [ ] README 配置板块：> 4 项时已按类别分组，单类 ≥ 4 项已用 `<details>` 折叠且 summary 自解释，首次必填的关键配置没被藏进折叠（配置表是备查资料，宁折叠勿铺长）
+- [ ] README 头部：首行是 `<img src="logo.png" alt="插件名" width="160" />`，中英两版都有，`alt` 已填，头部元素间无空行
+- [ ] 标签：`metadata.yaml` 的 `tags` 是全量关键词且**一个标签一个概念**（复合词已拆开，未因 README 只显示重点而删减）；中英两份 README 头部只列插件真正的重点功能（数量不限，可为 `tags` 的变体，但不虚构能力）
 - [ ] README 安装与许可证：未写分步「安装/快速开始」，未写许可证小节/徽章；版本与协议端仅在确有明确限制时才写，最低版本能明确时写进 `metadata.yaml` 的 `astrbot_version`
 - [ ] 版本号：日常任务不递增版本号；仅发版任务改 `metadata.yaml` 的 `version`（与 CHANGELOG 新版本段、tag 一致）
 - [ ] 提交信息：Conventional Commits 格式（`type: 中文短句式`），只描述最终行为
