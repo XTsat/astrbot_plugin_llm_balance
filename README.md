@@ -155,18 +155,24 @@ OpenAI 官方**不提供**查询账户剩余余额的接口，但提供用量与
 </details>
 
 <details>
-<summary>输出模板（6 项 + 11 个变量）</summary>
+<summary>输出模板（3 项 + 变量）</summary>
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| 成功模板（`success_template`） | text | 见下 | 查询成功时的显示格式 |
-| 失败模板（`error_template`） | text | 见下 | 查询失败时的显示格式 |
-| 标题模板（`header_template`） | string | `💰 **{{title}}**` | 报告标题，变量 `{{title}}` |
-| 标题分隔符（`separator_template`） | string | `════════` 一行 | 标题与内容之间的分隔线 |
-| 项间分隔符（`item_separator_template`） | string | 空 | 同区块内多条结果之间，留空则为空行 |
-| 区块分隔符（`section_separator_template`） | string | `════════` 一行 | 成功/失败/未适配区块之间 |
+| 报告模板（`report_template`） | text | 见下 | 整条消息的格式：标题 + 成功区块 + 失败区块 + 未适配区块，可自行加分隔线 |
+| 成功模板（`success_template`） | text | 见下 | 单条成功结果的显示格式 |
+| 失败模板（`error_template`） | text | 见下 | 单条失败结果的显示格式 |
 
-所有模板均支持 `\n` 换行与以下变量：
+**报告模板**可用变量（控制整条消息）：
+
+| 变量 | 说明 |
+|---|---|
+| `{{title}}` | 标题文字 |
+| `{{success_section}}` | 成功结果区块，多条时自动带「查询成功」标题 |
+| `{{failure_section}}` | 失败结果区块，多条时自动带「查询失败」标题 |
+| `{{unsupported_section}}` | 未适配平台区块 |
+
+**结果模板**可用变量（控制单条结果，均支持 `\n` 换行）：
 
 | 变量 | 说明 | 用于 |
 |---|---|---|
@@ -182,7 +188,19 @@ OpenAI 官方**不提供**查询账户剩余余额的接口，但提供用量与
 | `{{smart_balance}}` | 智能附加信息（自动隐藏无意义行） | 成功 |
 | `{{?变量}}` | 条件变量，值为空或 `0` 时隐藏整行 | 成功 |
 
-成功模板默认值：
+报告模板默认值：
+
+```
+💰 **{{title}}**
+
+{{success_section}}
+
+{{failure_section}}
+
+{{unsupported_section}}
+```
+
+成功模板 / 失败模板默认值：
 
 ```
 🟢 **{{source_name}}**
@@ -190,8 +208,6 @@ OpenAI 官方**不提供**查询账户剩余余额的接口，但提供用量与
   💵 {{balance}} {{currency}}
 {{smart_balance}}
 ```
-
-失败模板默认值：
 
 ```
 🔴 **{{source_name}}**

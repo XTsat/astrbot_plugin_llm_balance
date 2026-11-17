@@ -155,18 +155,24 @@ Start here on first use: to query your own relay, just add its address to "API e
 </details>
 
 <details>
-<summary>Output templates (6 items + 11 variables)</summary>
+<summary>Output templates (3 items + variables)</summary>
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| Success template (`success_template`) | text | see below | Format for a successful query |
-| Failure template (`error_template`) | text | see below | Format for a failed query |
-| Header template (`header_template`) | string | `💰 **{{title}}**` | Report title, variable `{{title}}` |
-| Title separator (`separator_template`) | string | one `════════` line | Separator between the title and the content |
-| Item separator (`item_separator_template`) | string | empty | Between results in the same section; blank line when empty |
-| Section separator (`section_separator_template`) | string | one `════════` line | Between success/failure/unsupported sections |
+| Report template (`report_template`) | text | see below | Whole message format: title + success section + failure section + unsupported section; add separators freely |
+| Success template (`success_template`) | text | see below | Format of a single successful result |
+| Failure template (`error_template`) | text | see below | Format of a single failed result |
 
-All templates support `\n` newlines and the following variables:
+**Report template** variables (control the whole message):
+
+| Variable | Description |
+|---|---|
+| `{{title}}` | Title text |
+| `{{success_section}}` | Successful results; carries a "查询成功" heading when there is more than one |
+| `{{failure_section}}` | Failed results; carries a "查询失败" heading when there is more than one |
+| `{{unsupported_section}}` | Unsupported platforms |
+
+**Result template** variables (control a single result; all support `\n` newlines):
 
 | Variable | Description | Used in |
 |---|---|---|
@@ -182,7 +188,19 @@ All templates support `\n` newlines and the following variables:
 | `{{smart_balance}}` | Smart extra info (auto-hides meaningless lines) | success |
 | `{{?variable}}` | Conditional variable; hides the whole line when empty or `0` | success |
 
-Default `success_template`:
+Default `report_template`:
+
+```
+💰 **{{title}}**
+
+{{success_section}}
+
+{{failure_section}}
+
+{{unsupported_section}}
+```
+
+Default `success_template` / `error_template`:
 
 ```
 🟢 **{{source_name}}**
@@ -190,8 +208,6 @@ Default `success_template`:
   💵 {{balance}} {{currency}}
 {{smart_balance}}
 ```
-
-Default `error_template`:
 
 ```
 🔴 **{{source_name}}**

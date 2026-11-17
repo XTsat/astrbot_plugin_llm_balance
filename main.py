@@ -15,6 +15,29 @@ from astrbot.api.star import Context, Star
 from astrbot.api import logger, AstrBotConfig
 
 
+# ==================== 模块常量 ====================
+
+# 输出模板默认值：报告模板管整条消息（标题 + 区块占位符），成功/失败模板管单条结果。
+# 结果条数由密钥/平台数量决定，模板里没有循环语法，因此单条结果的格式必须单独成模板。
+DEFAULT_TEMPLATES = {
+    "report_template": (
+        "💰 **{{title}}**\n\n"
+        "{{success_section}}\n\n"
+        "{{failure_section}}\n\n"
+        "{{unsupported_section}}"
+    ),
+    "success_template": (
+        "🟢 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  💵 {{balance}} {{currency}}\n{{smart_balance}}"
+    ),
+    "error_template": "🔴 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  ❌ {{error}}",
+}
+
+
+def _tidy_report(text: str) -> str:
+    """整理最终文案：空占位符留下的连续空行压成一个，并去掉首尾空白"""
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 # ==================== 数据模型 ====================
 
 @dataclass
@@ -64,23 +87,23 @@ class BalanceResult:
     def _render_error(self, template: str, api_key: str) -> str:
         """渲染错误模板"""
         if not template:
-            template = "🔴 **{{source_name}}**\n  ❌ {{error}}"
-        replacements = {
+            template = DEFAULT_TEMPLATES["error_template"]
+        result = template.replace("\\n", "\n")
+        for key, value in {
             "{{api_key}}": api_key,
             "{{source_name}}": self.source_name,
             "{{error}}": self.error,
-        }
-        result = template
-        for key, value in replacements.items():
+        }.items():
             result = result.replace(key, str(value))
-        return result.replace("\\n", "\n")
+        return result
 
     def _render_success(self, template: str, api_key: str) -> str:
+        """渲染成功模板；{{?变量}} 标记的行在变量为空或 0 时整行移除"""
         if not template:
             return self._get_default_string()
 
-        # {{smart_balance}} 引用智能附加信息
-        template = template.replace("{{smart_balance}}", self._get_default_body())
+        # 先把字面 \\n 转成真换行，条件行才能按行判断（否则整段会被当成一行）
+        tpl = template.replace("\\n", "\n").replace("{{smart_balance}}", self._get_default_body())
 
         smart_balance = self.remaining_balance if self.remaining_balance != self.total_balance else self.total_balance
         replacements = {
@@ -93,20 +116,20 @@ class BalanceResult:
             "{{used_balance}}": self.used_balance,
             "{{raw_info}}": self.raw_info,
         }
-        # 处理 {{?变量}} 条件行：值为空或"0"时移除整行
+        # 处理 {{?变量}} 条件行：值为空或 "0" 时移除整行
+        blank_markers = {
+            key.replace("{{", "{{?"): (not str(value).strip() or str(value).strip() == "0")
+            for key, value in replacements.items()
+        }
+        lines = [
+            line for line in tpl.split("\n")
+            if not any(marker in line and blank for marker, blank in blank_markers.items())
+        ]
+        result = "\n".join(lines)
         for key, value in replacements.items():
-            cond_key = key.replace("{{", "{{?")
-            if cond_key in template:
-                if not str(value).strip() or str(value).strip() == "0":
-                    for line in template.split("\n"):
-                        if cond_key in line:
-                            template = template.replace(line + "\n", "").replace("\n" + line, "").replace(line, "")
-        # 常规替换
-        result = template
-        for key, value in replacements.items():
-            result = result.replace(key, str(value))
             result = result.replace(key.replace("{{", "{{?"), str(value))
-        return result.replace("\\n", "\n")
+            result = result.replace(key, str(value))
+        return result
 
 
 # 模型可用性测试：明显非聊天类模型名特征
@@ -958,25 +981,59 @@ class BalancePlugin(Star):
             return "****"
         return key[:6] + "*" * (len(key) - 9) + key[-3:]
 
-    def _item_sep(self) -> str:
-        """获取项间分隔符（默认空行）"""
-        sep = self._get_template("item_separator_template")
-        if not sep:
-            return "\n\n"
-        return "\n" + sep + "\n"
+    def _render_report(self, title: str, success_items: list, failure_items: list,
+                       unsupported: list | None = None, lang: str = "zh",
+                       failure_label: str = "", show_success_label: bool = True) -> str:
+        """按报告模板组装整条消息：标题 + 成功块 + 失败块 + 未适配块
 
-    def _sep(self) -> str:
-        """获取标题分隔线"""
-        return "\n" + self._get_template("separator_template") + "\n"
+        只有一条结果时不加「查询成功/失败」区块标题，避免单条结果前多出一行。"""
+        en = lang != "zh"
+        total = len(success_items) + len(failure_items)
+        multi = total > 1
+        success_label = "**Succeeded:**" if en else "**查询成功:**"
+        if not (multi and show_success_label):
+            success_label = ""
+        fail_label = failure_label or ("**Failed:**" if en else "**查询失败:**")
+        success_section = self._join_section(success_items, success_label)
+        failure_section = self._join_section(failure_items, fail_label if multi else "")
 
-    def _section_sep(self) -> str:
-        """获取区块分隔线"""
-        return "\n" + self._get_template("section_separator_template") + "\n"
+        unsupported_section = ""
+        if unsupported:
+            prefix = "⚪ **Unsupported:**" if en else "⚪ **未适配平台:**"
+            unsupported_section = f"{prefix}\n  " + ", ".join(unsupported)
 
-    def _header(self, title: str) -> str:
-        """根据模板生成标题"""
-        template = self._get_template("header_template")
-        return template.replace("{{title}}", title)
+        tpl = self._get_report_template()
+        out = (tpl.replace("{{title}}", title)
+                  .replace("{{success_section}}", success_section)
+                  .replace("{{failure_section}}", failure_section)
+                  .replace("{{unsupported_section}}", unsupported_section))
+        return _tidy_report(out)
+
+    def _report_title(self, title: str) -> str:
+        """只渲染报告标题，用于帮助、提示这类没有结果区块的内容"""
+        return self._render_report(title, [], [])
+
+    @staticmethod
+    def _join_section(items: list, label: str = "") -> str:
+        """拼接一个结果区块；label 为空时不加区块标题"""
+        if not items:
+            return ""
+        body = "\n\n".join(items)
+        return f"{label}\n{body}" if label else body
+
+    def _get_report_template(self) -> str:
+        """报告模板：未配置时用默认。
+
+        旧版 header_template 尽力兼容读取（AstrBot 按新 schema 保存配置后该键会被清理），
+        能读到就用它当标题，避免用户自定义的标题在升级后突然变回默认。"""
+        tpl = self.config.get("report_template")
+        if tpl:
+            return str(tpl).replace("\\n", "\n")
+        legacy = str(self.config.get("header_template") or "").strip()
+        if legacy:
+            return (legacy.replace("\\n", "\n")
+                    + "\n\n{{success_section}}\n\n{{failure_section}}\n\n{{unsupported_section}}")
+        return DEFAULT_TEMPLATES["report_template"]
 
     @staticmethod
     def _norm_base(url: str) -> str:
@@ -1040,20 +1097,9 @@ class BalancePlugin(Star):
         return res.to_string(success_tpl, error_tpl, api_key=masked_key)
 
     def _get_template(self, key: str) -> str:
-        """获取并处理模板（处理 \\n 转义）"""
-        DEFAULT_TEMPLATES = {
-            "success_template": "",
-            "error_template": "🔴 **{{source_name}}**\n  ❌ {{error}}",
-            "header_template": "💰 **{{title}}**",
-            "separator_template": "════════════════════════════════════════",
-            "item_separator_template": "",
-            "section_separator_template": "════════════════════════════════════════",
-        }
-        default = DEFAULT_TEMPLATES.get(key, "")
-        tpl = self.config.get(key, "")
-        if not tpl:
-            tpl = default
-        return tpl
+        """取单条结果模板；未配置时回落到默认值（原文返回，字面 \\n 由渲染处转换）"""
+        tpl = self.config.get(key) or DEFAULT_TEMPLATES.get(key, "")
+        return str(tpl)
 
     @staticmethod
     def _strip_arg_prefix(token: str, prefixes: tuple[str, ...]) -> str | None:
@@ -1201,22 +1247,8 @@ class BalancePlugin(Star):
             text = self._format_result(res, self._mask_key(key))
             (error_list if res.error else success_list).append(text)
 
-        if len(keys) == 1:
-            msg = self._header(title)
-            msg += self._sep()
-            msg += (success_list[0] if success_list else error_list[0])
-            return msg
-
-        msg = self._header(f"{title} ({len(keys)} 个密钥)")
-        msg += self._sep()
-        if success_list:
-            msg += self._item_sep().join(success_list)
-        if error_list:
-            if success_list:
-                msg += self._section_sep()
-            msg += "**查询失败:**\n"
-            msg += self._item_sep().join(error_list)
-        return msg
+        report_title = title if len(keys) == 1 else f"{title} ({len(keys)} 个密钥)"
+        return self._render_report(report_title, success_list, error_list)
 
     async def _query_and_format(self, title, keys, fetch_fn, display_name="") -> str:
         """并发查询多个 key 并格式化"""
@@ -1464,9 +1496,10 @@ class BalancePlugin(Star):
         if not result.error:
             result.source_name = display_name
 
-        msg = self._header("当前余额查询")
-        msg += self._sep()
-        msg += self._format_result(result, self._mask_key(api_key))
+        item = self._format_result(result, self._mask_key(api_key))
+        msg = self._render_report("当前余额查询",
+                                  [item] if not result.error else [],
+                                  [item] if result.error else [])
         yield event.plain_result(msg)
 
     async def _query_all(self, event: AstrMessageEvent):
@@ -1535,27 +1568,16 @@ class BalancePlugin(Star):
                 res.source_name = display_name
                 success_msgs.append(text)
 
-        msg = self._header("全平台余额汇总")
-        msg += self._sep()
-
-        if success_msgs:
-            msg += "**查询成功:**\n"
-            msg += self._item_sep().join(success_msgs)
-
-        if error_msgs:
-            msg += self._section_sep()
-            msg += "**查询失败:**\n"
-            msg += self._item_sep().join(error_msgs)
-
-        if unsupported_ids and self.config.get("show_unsupported", True):
-            unique_unsupported = sorted(list(set(unsupported_ids)))
-            msg += self._section_sep()
-            msg += "⚪ **未适配平台**:\n  " + ", ".join(unique_unsupported)
-
         if not success_msgs and not error_msgs and not unsupported_ids:
-            msg += "⚠️ 未检测到有效的平台配置。"
+            yield event.plain_result(
+                self._report_title("全平台余额汇总") + "\n\n⚠️ 未检测到有效的平台配置。")
+            return
 
-        yield event.plain_result(msg)
+        unsupported = []
+        if self.config.get("show_unsupported", True):
+            unsupported = sorted(set(unsupported_ids))
+        yield event.plain_result(
+            self._render_report("全平台余额汇总", success_msgs, error_msgs, unsupported))
 
     async def _query_by_platform(self, event: AstrMessageEvent, platform_name: str, extra_args: str = ""):
         """根据平台简写/名称查询余额，支持传入自定义 API Key 列表（不要求 sk- 前缀，可用 key: 强制指定）"""
@@ -1659,18 +1681,18 @@ class BalancePlugin(Star):
             tasks = [NewApiFetcher().fetch(session, key, url) for url, key, _ in url_key_pairs]
             results = await asyncio.gather(*tasks)
 
-            if len(results) == 1:
-                msg = self._header(f"{display_name} 余额查询")
-                msg += self._sep()
-                msg += self._format_result(results[0], self._mask_key(url_key_pairs[0][1]))
-                yield event.plain_result(msg)
-            else:
-                msg = self._header(f"{display_name} 余额查询 ({len(results)} 个实例)")
-                msg += self._sep()
-                parts = []
-                for res, (url, key, label) in zip(results, url_key_pairs):
-                    parts.append(f"**{label}**\n" + self._format_result(res, self._mask_key(key)))
-                msg += self._item_sep().join(parts)
+            success_parts, failure_parts = [], []
+            multi = len(results) > 1
+            for res, (url, key, label) in zip(results, url_key_pairs):
+                text = self._format_result(res, self._mask_key(key))
+                if multi:
+                    text = f"**{label}**\n" + text
+                (failure_parts if res.error else success_parts).append(text)
+
+            report_title = f"{display_name} 余额查询"
+            if multi:
+                report_title += f" ({len(results)} 个实例)"
+            yield event.plain_result(self._render_report(report_title, success_parts, failure_parts))
             return
         if not matched_providers:
             yield event.plain_result(
@@ -1805,25 +1827,14 @@ class BalancePlugin(Star):
             text = res.to_string(self._mask_key(key), lang)
             (error_list if res.error else success_list).append(text)
 
-        if len(keys) == 1:
-            msg = self._header(title)
-            msg += self._sep()
-            msg += (success_list[0] if success_list else error_list[0])
-            return msg
-
-        if en:
-            msg = self._header(f"{title} ({len(keys)} key(s))")
-        else:
-            msg = self._header(f"{title} ({len(keys)} 个密钥)")
-        msg += self._sep()
-        if success_list:
-            msg += self._item_sep().join(success_list)
-        if error_list:
-            if success_list:
-                msg += self._section_sep()
-            msg += "**Failed tests:**\n" if en else "**测试失败:**\n"
-            msg += self._item_sep().join(error_list)
-        return msg
+        report_title = title
+        if len(keys) > 1:
+            count_label = f" ({len(keys)} key(s))" if en else f" ({len(keys)} 个密钥)"
+            report_title += count_label
+        failure_label = "**Failed tests:**" if en else "**测试失败:**"
+        return self._render_report(report_title, success_list, error_list,
+                                   lang=lang, failure_label=failure_label,
+                                   show_success_label=False)
 
     def _pick_chat_models(self, models: List[str], limit: int = 3) -> List[str]:
         """挑选用于实测的候选模型：过滤明显非聊天类，优先聊天/生成类"""
@@ -2034,8 +2045,8 @@ class BalancePlugin(Star):
         """获取帮助文本"""
         platforms = "、".join(self._get_unique_platform_display_names())
         return (
-            self._header("余额查询插件")
-            + self._sep()
+            self._report_title("余额查询插件")
+            + "\n\n"
             + "**使用方法:**\n"
             + "  /余额 当前 | /余额 所有 - 查当前会话 / 全部已配置模型的余额\n"
             + "  /余额 <平台简写> - 查指定平台余额（用你在 AstrBot 里配置的 provider）\n"

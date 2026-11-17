@@ -8,8 +8,16 @@
   "output_language": {
     "description": "输出语言",
     "type": "string",
-    "options": ["auto", "zh", "en"],
-    "labels": ["自动（按指令语言）", "中文", "英文"],
+    "options": [
+      "auto",
+      "zh",
+      "en"
+    ],
+    "labels": [
+      "自动（按指令语言）",
+      "中文",
+      "英文"
+    ],
     "hint": "auto：按指令语言自动切换（中文指令输出中文，英文指令输出英文）；zh：强制中文；en：强制英文",
     "default": "auto"
   },
@@ -38,6 +46,12 @@
     "hint": "在/余额 所有中是否显示未适配的平台列表",
     "default": true
   },
+  "report_template": {
+    "description": "报告模板",
+    "type": "text",
+    "hint": "整条消息的格式：标题 + 成功区块 + 失败区块 + 未适配区块，区块之间用空行分隔，可自行加分隔线。可用变量：{{title}}（标题文字）、{{success_section}}（成功结果，多条时自动带「查询成功」标题）、{{failure_section}}（失败结果）、{{unsupported_section}}（未适配平台）。单条结果的格式由「成功模板」「失败模板」控制。",
+    "default": "💰 **{{title}}**\n\n{{success_section}}\n\n{{failure_section}}\n\n{{unsupported_section}}"
+  },
   "success_template": {
     "description": "成功模板",
     "type": "text",
@@ -49,30 +63,6 @@
     "type": "text",
     "hint": "查询失败时的显示格式。可用变量：{{api_key}}（脱敏密钥）、{{source_name}}（平台名称）、{{error}}（错误信息）。",
     "default": "🔴 **{{source_name}}**\n  🔑 密钥: {{api_key}}\n  ❌ {{error}}"
-  },
-  "header_template": {
-    "description": "标题模板",
-    "type": "string",
-    "hint": "查询结果的标题格式。可用变量：{{title}}（标题文字）。",
-    "default": "💰 **{{title}}**"
-  },
-  "separator_template": {
-    "description": "标题分隔符",
-    "type": "string",
-    "hint": "标题与内容之间的分隔符。",
-    "default": "════════════════════════════════════════"
-  },
-  "item_separator_template": {
-    "description": "项间分隔符",
-    "type": "string",
-    "hint": "同区块内多条结果之间的分隔符。",
-    "default": ""
-  },
-  "section_separator_template": {
-    "description": "区块分隔符",
-    "type": "string",
-    "hint": "成功/失败/未适配等区块之间的分隔符。",
-    "default": "════════════════════════════════════════"
   },
   "platform_names": {
     "description": "API 连接缩写映射",
