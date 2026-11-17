@@ -379,6 +379,69 @@ def _billing_unavailable_reason(diagnostics: dict | None) -> str:
     return f"余额接口返回 HTTP {status}（该接口由中转站实现，官方 OpenAI 不提供）"
 
 
+async def _probe_official_costs(session: aiohttp.ClientSession, admin_key: str,
+                                base_url: str) -> BalanceResult | None:
+    """查询 OpenAI 官方组织花费（本月累计，需 Admin Key）。
+
+    官方不提供账户余额接口，唯一可编程获取的金额数据是 /organization/costs 的**花费**统计，
+    因此这里明确标注为「花费」而不是「余额」，避免用户把它当成剩余额度。
+    该端点只接受 Admin Key，普通项目密钥会返回 403，此时返回 None 交给调用方解释原因。"""
+    if not admin_key:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {admin_key}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=10)
+    url = f"{base_url.rstrip('/')}/v1/organization/costs"
+    # 本月 1 号 0 点至今：跨月的账户也能给出直观的「本月已花」
+    month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    params = {"start_time": int(month_start.timestamp()), "bucket_width": "1d", "limit": 31}
+
+    total = 0.0
+    currency = "usd"
+    page = None
+    # 分页上限 5 页（本月最多 31 天，正常 1 页即可），避免异常响应导致死循环
+    for _ in range(5):
+        query = dict(params)
+        if page:
+            query["page"] = page
+        try:
+            async with session.get(url, headers=headers, params=query, timeout=timeout) as resp:
+                if resp.status in (401, 403):
+                    _log_probe("organization/costs", url, resp.status, "Admin Key 无效或无权限")
+                    return None
+                if resp.status != 200:
+                    _log_probe("organization/costs", url, resp.status)
+                    return None
+                data = await resp.json()
+        except Exception as e:
+            _log_probe("organization/costs", url, None, f"{type(e).__name__}: {e}")
+            return None
+
+        for bucket in (data.get("data") or []):
+            for entry in (bucket.get("results") or []):
+                amount = entry.get("amount") or {}
+                total += _as_float(amount.get("value"))
+                currency = str(amount.get("currency") or currency)
+        if not data.get("has_more"):
+            break
+        page = data.get("next_page")
+        if not page:
+            break
+
+    _log_probe("organization/costs", url, 200, f"本月累计 {total:.2f} {currency.upper()}")
+    return BalanceResult(
+        source_name="OpenAI 官方花费",
+        currency=currency.upper(),
+        total_balance=f"{total:.2f}",
+        remaining_balance=f"{total:.2f}",
+        raw_info=f"{month_start.strftime('%Y-%m-%d')} 起累计花费 | 官方不提供余额接口，此处为花费统计而非剩余额度",
+    )
+
+
 async def _probe_newapi_usage(session: aiohttp.ClientSession, api_key: str,
                               base_url: str) -> BalanceResult | None:
     """探测 New API 系的令牌用量接口；端点不是 New API 时返回 None"""
@@ -624,6 +687,10 @@ class OpenAIFetcher(BaseBalanceFetcher):
     aliases = ["openai", "gpt", "chatgpt"]
     match_domains = ("openai.com",)
 
+    def __init__(self, admin_key: str = "") -> None:
+        # 官方不提供余额接口，配了 Admin Key 才有可查的金额数据（本月花费）
+        self.admin_key = admin_key
+
     async def fetch(self, session: aiohttp.ClientSession, api_key: str, api_base: str) -> BalanceResult:
         base_url = api_base.strip().rstrip("/") if api_base else "https://api.openai.com"
         if "/v1" in base_url:
@@ -635,11 +702,22 @@ class OpenAIFetcher(BaseBalanceFetcher):
                                       diagnostics=diagnostics)
         if result is not None:
             return result
-        # 该余额接口是 New API / One API 等中转站为兼容旧面板而实现的，OpenAI 官方从未提供：
-        # 官方域名查不到是必然结果，要把「为什么查不到」写清楚，别让人误以为是密钥或插件坏了
+
+        # 官方域名不提供余额接口（那是中转站的兼容实现），但官方提供花费统计：
+        # 配了 Admin Key 就给出本月花费，明确标注为花费而非余额
+        official = await _probe_official_costs(session, self.admin_key, base_url)
+        if official is not None:
+            return official
+
+        # 没配 Admin Key 或 Admin Key 无效时，把「为什么查不到」写清楚，
+        # 别让人误以为是密钥或插件坏了
+        if not self.admin_key:
+            hint = "未配置 openai_admin_key，无法查询官方花费"
+        else:
+            hint = "openai_admin_key 无效或无权限（官方花费接口需要 Admin Key）"
         return BalanceResult(
             "OpenAI", "Unknown", "0",
-            error=f"{UNSUPPORTED_BALANCE_HINT} ({_billing_unavailable_reason(diagnostics)})",
+            error=f"{UNSUPPORTED_BALANCE_HINT} ({_billing_unavailable_reason(diagnostics)}；{hint})",
         )
 
 
@@ -683,9 +761,10 @@ class NewApiFetcher(BaseBalanceFetcher):
 class BalanceManager:
     """余额查询管理器，管理所有平台的 Fetcher"""
 
-    def __init__(self, newapi_base_url: str = ""):
+    def __init__(self, newapi_base_url: str = "", openai_admin_key: str = ""):
         # 支持多个 NEW API 地址，换行分隔
         self.newapi_base_url = newapi_base_url
+        self.openai_admin_key = openai_admin_key
         self.newapi_urls: List[str] = []
         if newapi_base_url:
             for url in newapi_base_url.replace(",", "\n").split("\n"):
@@ -697,7 +776,7 @@ class BalanceManager:
             SiliconCloudFetcher(),
             MoonshotFetcher(),
             ChatAnywhereFetcher(),
-            OpenAIFetcher(),
+            OpenAIFetcher(admin_key=openai_admin_key),
             NewApiFetcher(),
         ]
         # 兜底查询器不在 fetchers 里排队：配置好的 NEW API 实例要优先于它命中
@@ -784,7 +863,9 @@ class BalancePlugin(Star):
         super().__init__(context)
         self.config = config or {}
         newapi_base_url = self.config.get("newapi_base_url", "")
-        self.manager = BalanceManager(newapi_base_url=newapi_base_url)
+        openai_admin_key = self.config.get("openai_admin_key", "") or ""
+        self.manager = BalanceManager(newapi_base_url=newapi_base_url,
+                                      openai_admin_key=openai_admin_key.strip())
         self._build_platform_config()
 
     def _build_platform_config(self):
@@ -1482,10 +1563,16 @@ class BalancePlugin(Star):
                     return
                 api_base = self.manager.newapi_urls[0]
 
+            # OpenAI 需要把配置里的 Admin Key 带进去，否则官方端点只能查中转站兼容接口
+            if fetcher_cls is OpenAIFetcher:
+                fetcher = fetcher_cls(admin_key=self.manager.openai_admin_key)
+            else:
+                fetcher = fetcher_cls()
+
             yield event.plain_result(f"🔄 正在查询 {len(valid_keys)} 个 {display_name} 密钥的余额，请稍候...")
             msg = await self._query_and_format(
                 f"{display_name} 余额查询", valid_keys,
-                lambda s, k: fetcher_cls().fetch(s, k, api_base),
+                lambda s, k: fetcher.fetch(s, k, api_base),
                 display_name,
             )
             yield event.plain_result(msg)

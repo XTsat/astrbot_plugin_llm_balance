@@ -58,6 +58,7 @@ Aliases can be customized in the plugin config.
 | `admin_only` | bool | `false` | Restrict to admins only |
 | `output_language` | string | `auto` | Output language: `auto` (switch by command language) / `zh` (force Chinese) / `en` (force English) |
 | `newapi_base_url` | text | empty | New API relay site URLs, one per line |
+| `openai_admin_key` | string | empty | OpenAI admin key (`sk-admin-…`, optional): when set, querying the official OpenAI endpoint reports **this month's accumulated spend** (OpenAI has no balance API, so this is spend, not remaining credit) |
 | `request_timeout` | float | `10.0` | Request timeout (seconds) |
 | `show_unsupported` | bool | `true` | Show unsupported platforms in `/balance all` |
 | `platform_aliases` | object | — | Per-platform aliases, comma-separated |
@@ -132,6 +133,23 @@ The endpoint is routed as follows:
 That means one-api, new-api, AIProxy and similar relay sites work right away without waiting for a plugin update. An account whose balance is `0` is reported as `0`, not as unsupported.
 
 > Note: the Billing-compatible API is implemented by **relay sites** (New API / One API) to stay compatible with the legacy OpenAI dashboard. The official OpenAI domain does not expose it, so pointing the plugin at the official endpoint always reports no balance — that is not a plugin failure. Use the OpenAI dashboard to check usage and balance for official accounts.
+
+## Querying OpenAI Official Spend
+
+OpenAI does **not** provide an API for reading remaining account balance, but it does provide usage and cost statistics (`/organization/costs`, `/organization/usage/*`). Those endpoints only accept an **admin key**; a regular project key returns 403.
+
+Once `openai_admin_key` is configured (`sk-admin-…`, created under Organization → Admin API Keys in the OpenAI dashboard), querying the official OpenAI endpoint reports **this month's accumulated spend**:
+
+```
+💰 **Current balance**
+════════════════════════════════════════
+🟢 **OpenAI official spend**
+  🔑 Key: sk-adm********************abc
+  💵 1.23 USD
+  📝 Spend since 2026-11-01 | OpenAI has no balance API; this is spend, not remaining credit
+```
+
+Note this is **spend**, not **balance**: OpenAI bills against prepaid credit, and `/organization/costs` only reports consumed amounts — check the remaining credit in the OpenAI dashboard. Without `openai_admin_key`, querying the official endpoint reports that no balance is available and explains why.
 
 ## Testing Model Availability
 
@@ -241,7 +259,9 @@ The plugin matches each URL to its corresponding provider key and queries them s
 ## FAQ
 
 **The official OpenAI endpoint reports "unable to get balance info" — is the plugin broken?**
-No. The balance API this plugin uses (`/v1/dashboard/billing/*`) is implemented by **relay sites such as New API / One API** for compatibility with the legacy OpenAI dashboard; OpenAI has never provided it, so it can never work against the official domain — no tool can retrieve it there. For official accounts, check balance and usage in the OpenAI dashboard (Billing page); relay sites are unaffected and keep working. The plugin now includes the returned status in the message, so you can tell "this endpoint has no such API" apart from an invalid key.
+No. The balance API this plugin uses (`/v1/dashboard/billing/*`) is implemented by **relay sites such as New API / One API** for compatibility with the legacy OpenAI dashboard; OpenAI has never provided it, so it can never work against the official domain — no tool can retrieve it there. For official accounts, check balance and usage in the OpenAI dashboard (Billing page); relay sites are unaffected and keep working.
+
+If you want monetary data for an official account inside the chat, configure `openai_admin_key` (an admin key is required) and the plugin reports **this month's accumulated spend** — spend, not remaining balance, since OpenAI has no balance API. The plugin now includes the returned status in the message, so you can tell "this endpoint has no such API" apart from an invalid key.
 
 **I get no balance and want to see which URLs the plugin actually called.**
 Set the AstrBot log level to `DEBUG` and run the query again. Log lines tagged `🔍 余额探测` show each probe endpoint and its response status, and `🔀 余额选路` shows which fetcher the site finally used — enough to tell an unsupported balance API apart from a key or network problem.

@@ -19,6 +19,13 @@
     "hint": "填写你的 NEW API 中转站地址，每行一个。例如：http://192.168.1.1:3000（不需要带 /api/usage/token）",
     "default": ""
   },
+  "openai_admin_key": {
+    "description": "OpenAI 官方 Admin Key",
+    "type": "string",
+    "secret": true,
+    "hint": "可选。OpenAI 官方不提供余额查询接口，唯一可查的金额数据是「本月花费」，且需要 Admin Key（在 OpenAI 后台 Organization → Admin API Keys 创建，以 sk-admin- 开头）。填写后，查询 OpenAI 官方端点会显示本月累计花费（非剩余余额）。不填则官方端点仅提示查不到余额。",
+    "default": ""
+  },
   "request_timeout": {
     "description": "请求超时时间",
     "type": "float",
